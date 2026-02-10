@@ -10,28 +10,28 @@ See: .planning/PROJECT.md (updated 2026-02-08)
 ## Current Position
 
 Phase: 1 of 5 (Foundation and Audio Proof-of-Concept)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-02-10 -- Roadmap created
+Plan: 1 of 3 in current phase
+Status: Executing phase
+Last activity: 2026-02-10 -- Completed 01-01 (Project Scaffold)
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [███░░░░░░░] 33%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
-- Average duration: -
-- Total execution time: 0 hours
+- Total plans completed: 1
+- Average duration: ~15 min
+- Total execution time: ~0.25 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 01-foundation-audio-poc | 1/3 | ~15 min | ~15 min |
 
 **Recent Trend:**
-- Last 5 plans: -
-- Trend: -
+- Last 5 plans: 01-01 (~15 min)
+- Trend: baseline
 
 *Updated after each plan completion*
 
@@ -45,6 +45,10 @@ Recent decisions affecting current work:
 - [Roadmap]: Rust stack selected (ratatui + rodio + crossterm + reqwest) per research synthesis
 - [Roadmap]: WSL2 audio PoC before any UI work -- highest risk validated first
 - [Roadmap]: 5 phases, standard depth, 42 v1 requirements mapped
+- [01-01]: Ctrl+C handled as crossterm KeyEvent in raw mode (signal-hook only catches external SIGINT)
+- [01-01]: color_eyre::Result used throughout for consistent error handling
+- [01-01]: Tracing output to ~/.local/share/termtunes/termtunes.log (keeps TUI clean)
+- [01-01]: Config file permissions 0o600 (will store auth tokens later)
 
 ### Pending Todos
 
@@ -57,5 +61,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-10
-Stopped at: Roadmap created, ready to plan Phase 1
-Resume file: None
+Stopped at: Completed 01-01-PLAN.md (Project Scaffold), ready for 01-02
+Resume file: .planning/phases/01-foundation-audio-poc/01-01-SUMMARY.md
