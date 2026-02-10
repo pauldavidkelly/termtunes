@@ -139,9 +139,17 @@ impl Player {
         // Each new Sink starts at volume 1.0, so we must explicitly set it.
         self.sink.set_volume(volume.clamp(0.0, 1.0));
 
-        // Decode and play
+        // Decode and play.
+        // Use the builder with byte_len and seekable so the symphonia backend
+        // knows the stream length and supports backward seeking (try_seek to
+        // an earlier position). Without this, only forward seeks succeed.
+        let byte_len = audio_bytes.len() as u64;
         let cursor = Cursor::new(audio_bytes.clone());
-        let source = Decoder::new(cursor)
+        let source = Decoder::builder()
+            .with_data(cursor)
+            .with_byte_len(byte_len)
+            .with_seekable(true)
+            .build()
             .map_err(|e| color_eyre::eyre::eyre!("Failed to decode audio: {}", e))?;
         self.sink.append(source);
 
@@ -262,8 +270,14 @@ impl Player {
         self.sink = Sink::connect_new(self._stream.mixer());
         self.sink.set_volume(volume.clamp(0.0, 1.0));
 
-        // Decode from cached bytes and start playback
-        let source = Decoder::new(Cursor::new(audio_bytes))
+        // Decode from cached bytes and start playback.
+        // Use the builder with byte_len and seekable for backward seek support.
+        let byte_len = audio_bytes.len() as u64;
+        let source = Decoder::builder()
+            .with_data(Cursor::new(audio_bytes))
+            .with_byte_len(byte_len)
+            .with_seekable(true)
+            .build()
             .map_err(|e| color_eyre::eyre::eyre!("Failed to decode audio for replay: {}", e))?;
         self.sink.append(source);
 
