@@ -100,13 +100,54 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (To be populated by roadmap) | | |
+| AUTH-01 | Phase 1 | Pending |
+| AUTH-02 | Phase 1 | Pending |
+| AUTH-03 | Phase 1 | Pending |
+| AUTH-04 | Phase 1 | Pending |
+| PLAY-01 | Phase 1 | Pending |
+| PLAY-02 | Phase 1 | Pending |
+| PLAY-03 | Phase 1 | Pending |
+| PLAY-04 | Phase 2 | Pending |
+| PLAY-05 | Phase 2 | Pending |
+| PLAY-06 | Phase 2 | Pending |
+| PLAY-07 | Phase 2 | Pending |
+| PLAY-08 | Phase 3 | Pending |
+| PLAY-09 | Phase 3 | Pending |
+| PLAY-10 | Phase 3 | Pending |
+| PLAY-11 | Phase 3 | Pending |
+| LIST-01 | Phase 2 | Pending |
+| LIST-02 | Phase 2 | Pending |
+| LIST-03 | Phase 2 | Pending |
+| LIST-04 | Phase 3 | Pending |
+| LIST-05 | Phase 3 | Pending |
+| DISP-01 | Phase 2 | Pending |
+| DISP-02 | Phase 2 | Pending |
+| DISP-03 | Phase 2 | Pending |
+| DISP-04 | Phase 2 | Pending |
+| DISP-05 | Phase 2 | Pending |
+| DISP-06 | Phase 2 | Pending |
+| DISP-07 | Phase 2 | Pending |
+| DISP-08 | Phase 3 | Pending |
+| DISP-09 | Phase 4 | Pending |
+| DISP-10 | Phase 4 | Pending |
+| KEY-01 | Phase 2 | Pending |
+| KEY-02 | Phase 2 | Pending |
+| KEY-03 | Phase 2 | Pending |
+| KEY-04 | Phase 1 | Pending |
+| KEY-05 | Phase 2 | Pending |
+| KEY-06 | Phase 3 | Pending |
+| POL-01 | Phase 5 | Pending |
+| POL-02 | Phase 5 | Pending |
+| POL-03 | Phase 4 | Pending |
+| POL-04 | Phase 4 | Pending |
+| POL-05 | Phase 4 | Pending |
+| POL-06 | Phase 1 | Pending |
 
 **Coverage:**
-- v1 requirements: 38 total
-- Mapped to phases: 0
-- Unmapped: 38 ⚠️
+- v1 requirements: 42 total
+- Mapped to phases: 42
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-08*
-*Last updated: 2026-02-08 after initial definition*
+*Last updated: 2026-02-10 after roadmap traceability mapping*
