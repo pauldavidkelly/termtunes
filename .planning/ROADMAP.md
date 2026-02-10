@@ -99,8 +99,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation and Audio PoC | 0/3 | Not started | - |
-| 2. Core TUI and Playback | 0/2 | Not started | - |
+| 1. Foundation and Audio PoC | 3/3 | Complete | 2026-02-10 |
+| 2. Core TUI and Playback | 2/2 | Complete | 2026-02-10 |
 | 3. Differentiators | 0/2 | Not started | - |
 | 4. Tmux Integration and Polish | 0/2 | Not started | - |
 | 5. Audio Visualizer | 0/1 | Not started | - |
