@@ -9,7 +9,11 @@ use tracing_subscriber::EnvFilter;
 
 use app::App;
 
-fn main() -> Result<()> {
+/// Entry point. Uses #[tokio::main] to provide an async runtime for Plex
+/// API calls (authentication, server discovery, playlist/track fetching).
+/// The TUI event loop itself is synchronous (crossterm polling).
+#[tokio::main]
+async fn main() -> Result<()> {
     // 1. Install color-eyre for enhanced error reporting and panic hooks
     color_eyre::install()?;
 
@@ -41,22 +45,33 @@ fn main() -> Result<()> {
     let shutdown = tui::install_signal_handlers();
 
     // 5. Load config (creates new with UUID on first run)
-    let config = config::load_config()?;
+    let mut config = config::load_config()?;
     tracing::info!(client_id = %config.client_id, "Config loaded");
 
     // 6. Save config (ensures file exists on first run)
     config::save_config(&config)?;
 
-    // 7. Initialize the terminal (enters alternate screen, enables raw mode)
+    // 7. Authenticate with Plex (before entering TUI so the auth URL
+    //    is displayed on the normal terminal, not the alternate screen)
+    let (plex_client, server_name) =
+        app::authenticate(&mut config).await?;
+
+    tracing::info!(server = %server_name, "Authenticated with Plex server");
+
+    // 8. Fetch initial playlists
+    let playlists = plex_client.fetch_playlists().await?;
+    tracing::info!(count = playlists.len(), "Fetched playlists");
+
+    // 9. Initialize the terminal (enters alternate screen, enables raw mode)
     let mut terminal = ratatui::init();
 
-    // 8. Create and run the app
-    let mut app = App::new(config, shutdown);
-    let result = app.run(&mut terminal);
+    // 10. Create and run the app with authenticated Plex client
+    let mut app = App::new(config, shutdown, plex_client, server_name, playlists);
+    let result = app.run(&mut terminal).await;
 
-    // 9. Restore terminal state (leave alternate screen, disable raw mode)
+    // 11. Restore terminal state (leave alternate screen, disable raw mode)
     ratatui::restore();
 
-    // 10. Propagate any error from the app run
+    // 12. Propagate any error from the app run
     result
 }
