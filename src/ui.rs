@@ -5,6 +5,7 @@ use ratatui::widgets::{Block, Borders, LineGauge, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, AppView};
+use crate::visualizer;
 
 /// Minimum terminal width below which we show a "too small" message.
 const MIN_WIDTH: u16 = 20;
@@ -15,10 +16,16 @@ const MIN_HEIGHT: u16 = 5;
 /// Width threshold below which the UI switches to narrow/simplified layout.
 const NARROW_WIDTH: u16 = 40;
 
+/// Minimum terminal height to show the visualizer. Terminals shorter than
+/// this auto-hide the visualizer to preserve the track list and player bar.
+const MIN_VIZ_HEIGHT: u16 = 20;
+
 /// Render the full UI frame based on the current app state.
 ///
 /// Layout: vertical split with main content area (Fill) and either a 3-line
 /// player bar (when a track is playing) or a 1-line status bar at the bottom.
+/// When the visualizer is enabled and space permits, a visualizer area is
+/// inserted between the main content and the player bar.
 ///
 /// Handles adaptive layout: shows a "too small" message for very small terminals,
 /// and switches to a simplified narrow layout for panes under 40 columns wide.
@@ -40,21 +47,52 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let has_player_bar = app.now_playing().is_some();
     let bar_height = if has_player_bar { 3 } else { 1 };
 
-    let [main_area, bar_area] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(bar_height)]).areas(area);
+    // Determine whether to show the visualizer: enabled, track playing,
+    // not narrow terminal, and minimum height available.
+    let show_viz = app.visualizer_enabled()
+        && app.now_playing().is_some()
+        && !is_narrow
+        && area.height >= MIN_VIZ_HEIGHT;
 
-    // Render main content based on current view
-    match app.view() {
-        AppView::Playlists => render_playlists(frame, app, main_area, width),
-        AppView::Tracks | AppView::Playing => render_tracks(frame, app, main_area, width),
-        AppView::Downloading => render_downloading(frame, main_area),
-    }
+    if show_viz {
+        // 3-part layout: track list, visualizer, player bar
+        let [main_area, viz_area, bar_area] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(8), // 8 rows = 6 content + 2 border
+            Constraint::Length(bar_height),
+        ])
+        .areas(area);
 
-    // Render player bar or status bar
-    if has_player_bar {
+        // Render main content
+        match app.view() {
+            AppView::Playlists => render_playlists(frame, app, main_area, width),
+            AppView::Tracks | AppView::Playing => render_tracks(frame, app, main_area, width),
+            AppView::Downloading => render_downloading(frame, main_area),
+        }
+
+        // Render visualizer
+        render_visualizer_area(frame, app, viz_area);
+
+        // Render player bar
         render_player_bar(frame, app, bar_area, is_narrow, width);
     } else {
-        render_status_bar(frame, app, bar_area, is_narrow);
+        // Standard 2-part layout: track list + player/status bar
+        let [main_area, bar_area] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(bar_height)]).areas(area);
+
+        // Render main content
+        match app.view() {
+            AppView::Playlists => render_playlists(frame, app, main_area, width),
+            AppView::Tracks | AppView::Playing => render_tracks(frame, app, main_area, width),
+            AppView::Downloading => render_downloading(frame, main_area),
+        }
+
+        // Render player bar or status bar
+        if has_player_bar {
+            render_player_bar(frame, app, bar_area, is_narrow, width);
+        } else {
+            render_status_bar(frame, app, bar_area, is_narrow);
+        }
     }
 }
 
@@ -183,6 +221,33 @@ fn render_downloading(frame: &mut Frame, area: Rect) {
         )
         .alignment(Alignment::Center);
     frame.render_widget(msg, area);
+}
+
+/// Render the audio spectrum visualizer area.
+///
+/// Calculates the dynamic number of bars from available width, then delegates
+/// to `visualizer::render_visualizer` with the smoothed bar values from the
+/// app state. Uses min(32, available_width - 2) bars.
+fn render_visualizer_area(frame: &mut Frame, app: &mut App, area: Rect) {
+    // Calculate dynamic bar count: available width minus borders (2),
+    // clamped to 4..=64 range.
+    let num_bars = ((area.width.saturating_sub(2)) as usize).clamp(4, 64);
+
+    // Update the app's dynamic bar count for the next FFT computation
+    app.set_visualizer_num_bars(num_bars);
+
+    // Get the smoothed bar values and take only as many as we can display
+    let bars = app.visualizer_bars();
+    let display_bars: Vec<f64> = if bars.len() >= num_bars {
+        bars[..num_bars].to_vec()
+    } else {
+        // If fewer bars than needed, pad with zeros
+        let mut v = bars.to_vec();
+        v.resize(num_bars, 0.0);
+        v
+    };
+
+    visualizer::render_visualizer(frame, area, &display_bars);
 }
 
 /// Render the 3-line player bar at the bottom of the screen.
@@ -383,7 +448,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool) 
         )
     } else {
         (
-            " TermTunes | q:quit  j/k:nav  Enter:select  Space:pause  n/N:next/prev  +/-:vol  s:shuffle  r:repeat  h/l:seek  f:fav  1-9:play fav"
+            " TermTunes | q:quit  j/k:nav  Enter:select  Space:pause  n/N:next/prev  +/-:vol  s:shuffle  r:repeat  h/l:seek  v:viz  f:fav  1-9:play fav"
                 .to_string(),
             Style::default().fg(Color::White).bg(Color::DarkGray),
         )

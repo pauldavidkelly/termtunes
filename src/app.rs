@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use color_eyre::Result;
@@ -13,6 +13,7 @@ use crate::config::{self, Config, ServerConfig};
 use crate::player::Player;
 use crate::plex::{self, Playlist, PlexClient, PlexServer, Track};
 use crate::ui;
+use crate::visualizer::{self, VisualizerData, VisualizerState};
 use rand::seq::SliceRandom;
 
 // ---------------------------------------------------------------------------
@@ -206,6 +207,20 @@ pub struct App {
     /// True when user pressed 'f' in Playlists view and we are waiting
     /// for a number key (1-9) to assign the selected playlist as a favorite.
     awaiting_favorite_key: bool,
+
+    /// Whether the visualizer display is enabled (toggled with 'v').
+    visualizer_enabled: bool,
+
+    /// Shared data between the audio thread (writes samples) and UI thread
+    /// (reads for FFT). Created once at app startup, passed to each new
+    /// VisualizerSource when a track starts playing.
+    visualizer_data: Arc<Mutex<VisualizerData>>,
+
+    /// Temporal smoothing state for visualizer bars (fast attack, slow decay).
+    visualizer_state: VisualizerState,
+
+    /// Dynamic number of bars based on available terminal width (set by UI).
+    visualizer_num_bars: usize,
 }
 
 impl App {
@@ -246,6 +261,10 @@ impl App {
             shuffle_position: 0,
             repeat_mode: RepeatMode::Off,
             awaiting_favorite_key: false,
+            visualizer_enabled: false,
+            visualizer_data: visualizer::create_visualizer_data(visualizer::FFT_SIZE),
+            visualizer_state: VisualizerState::new(visualizer::NUM_BARS),
+            visualizer_num_bars: visualizer::NUM_BARS,
         }
     }
 
@@ -328,6 +347,39 @@ impl App {
         &self.config.favorites
     }
 
+    /// Whether the audio visualizer is enabled (toggled with 'v').
+    pub fn visualizer_enabled(&self) -> bool {
+        self.visualizer_enabled
+    }
+
+    /// Get the current smoothed visualizer bar values for rendering.
+    pub fn visualizer_bars(&self) -> &[f64] {
+        self.visualizer_state.bars()
+    }
+
+    /// Update the visualizer FFT computation and smoothing.
+    ///
+    /// Only performs work when the visualizer is enabled AND a track is
+    /// playing. When disabled or paused, this is a no-op (zero CPU overhead).
+    /// Called once per render tick (~10 Hz) in the event loop.
+    pub fn update_visualizer(&mut self) {
+        if !self.visualizer_enabled || self.now_playing.is_none() {
+            return;
+        }
+
+        if let Some(bars) = visualizer::compute_spectrum_bars(
+            &self.visualizer_data,
+            self.visualizer_num_bars,
+        ) {
+            self.visualizer_state.update(&bars);
+        }
+    }
+
+    /// Set the dynamic number of visualizer bars (called by UI based on width).
+    pub fn set_visualizer_num_bars(&mut self, n: usize) {
+        self.visualizer_num_bars = n.clamp(4, 64);
+    }
+
     // -----------------------------------------------------------------------
     // Event loop
     // -----------------------------------------------------------------------
@@ -361,6 +413,10 @@ impl App {
                     }
                 }
             }
+
+            // Update visualizer FFT data before drawing (runs at render tick
+            // rate ~10 Hz). No-op when visualizer is disabled or paused.
+            self.update_visualizer();
 
             // Draw the UI
             terminal.draw(|frame| {
@@ -426,7 +482,7 @@ impl App {
 
                     // Start playback with the saved volume level
                     if let Some(player) = &mut self.player {
-                        match player.load_and_play(audio_bytes, track_name.clone(), self.saved_volume, None) {
+                        match player.load_and_play(audio_bytes, track_name.clone(), self.saved_volume, Some(Arc::clone(&self.visualizer_data))) {
                             Ok(()) => {
                                 self.view = AppView::Playing;
                                 self.error_message = None;
@@ -554,6 +610,11 @@ impl App {
                         }
                     }
                 }
+            }
+            // Toggle visualizer (POL-01, POL-02) -- v
+            (KeyCode::Char('v'), _) => {
+                self.visualizer_enabled = !self.visualizer_enabled;
+                tracing::info!(enabled = self.visualizer_enabled, "Visualizer toggled");
             }
             // Assign favorite (DIFF-04) -- f key starts favorite assignment mode
             (KeyCode::Char('f'), _) => {
@@ -908,7 +969,7 @@ impl App {
             RepeatMode::One => {
                 // Replay current track from cached bytes (no re-download)
                 if let Some(player) = &mut self.player {
-                    if let Err(e) = player.replay_current(self.saved_volume, None) {
+                    if let Err(e) = player.replay_current(self.saved_volume, Some(Arc::clone(&self.visualizer_data))) {
                         tracing::warn!("Repeat One replay failed: {}, falling back to download", e);
                         // Fallback: re-download if cached replay fails
                         if let Some(idx) = self.current_track_index {
