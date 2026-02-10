@@ -46,12 +46,11 @@ Plans:
   2. User can skip forward/back between tracks, adjust volume up/down, and toggle play/pause -- all with keyboard-only controls
   3. Player bar displays current track name, artist, album, playback state, volume level, and a progress bar with elapsed/total time
   4. All interaction works without mouse input -- vim keybindings are the only navigation method
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
-- [ ] 02-03: TBD
+- [ ] 02-01-PLAN.md -- Player controls (volume, position), app state (NowPlaying, track index, auto-advance, keybindings)
+- [ ] 02-02-PLAN.md -- UI rewrite with 3-line player bar (track info, progress, status) and human verification
 
 ### Phase 3: Differentiators
 **Goal**: User can assign favorite playlists to number keys for instant access, shuffle and repeat playlists, and seek within tracks
@@ -101,7 +100,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation and Audio PoC | 0/3 | Not started | - |
-| 2. Core TUI and Playback | 0/3 | Not started | - |
+| 2. Core TUI and Playback | 0/2 | Not started | - |
 | 3. Differentiators | 0/2 | Not started | - |
 | 4. Tmux Integration and Polish | 0/2 | Not started | - |
 | 5. Audio Visualizer | 0/1 | Not started | - |
