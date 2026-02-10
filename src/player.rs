@@ -23,14 +23,24 @@ pub struct Player {
     /// prefix because it is never read, only kept alive.
     _stream: OutputStream,
 
-    /// Rodio Sink for playback control (play/pause/stop/append).
-    sink: Sink,
+    /// Rodio Sink for main music playback control (play/pause/stop/append).
+    /// Renamed from `sink` to `main_sink` to distinguish from ambient_sink.
+    main_sink: Sink,
 
     /// Raw audio bytes of the current track, kept for potential re-creation.
     _audio_data: Option<Vec<u8>>,
 
     /// Name of the currently playing track (for status bar display).
     current_track: Option<String>,
+
+    /// Ambient channel sink -- None when no ambient track is loaded.
+    ambient_sink: Option<Sink>,
+
+    /// Raw audio bytes of the ambient track, kept for loop re-decode.
+    ambient_audio_data: Option<Vec<u8>>,
+
+    /// Name of the ambient track (for status display).
+    ambient_track_name: Option<String>,
 }
 
 impl Player {
@@ -84,7 +94,7 @@ impl Player {
             }
         })?;
 
-        let sink = Sink::connect_new(stream.mixer());
+        let main_sink = Sink::connect_new(stream.mixer());
 
         tracing::info!(
             config = ?stream.config(),
@@ -93,9 +103,12 @@ impl Player {
 
         Ok(Self {
             _stream: stream,
-            sink,
+            main_sink,
             _audio_data: None,
             current_track: None,
+            ambient_sink: None,
+            ambient_audio_data: None,
+            ambient_track_name: None,
         })
     }
 
@@ -138,15 +151,15 @@ impl Player {
         visualizer_data: Option<Arc<Mutex<VisualizerData>>>,
     ) -> Result<()> {
         // Stop current playback
-        self.sink.stop();
+        self.main_sink.stop();
 
         // Create a fresh Sink connected to the same output stream.
         // This avoids the blocking behavior of append-after-stop.
-        self.sink = Sink::connect_new(self._stream.mixer());
+        self.main_sink = Sink::connect_new(self._stream.mixer());
 
         // Restore the user's saved volume level on the new Sink.
         // Each new Sink starts at volume 1.0, so we must explicitly set it.
-        self.sink.set_volume(volume.clamp(0.0, 1.0));
+        self.main_sink.set_volume(volume.clamp(0.0, 1.0));
 
         // Decode and play.
         // Use the builder with byte_len and seekable so the symphonia backend
@@ -166,9 +179,9 @@ impl Player {
         // real-time FFT visualization without affecting audio quality.
         if let Some(data) = visualizer_data {
             let viz_source = VisualizerSource::new(source, data, FFT_SIZE);
-            self.sink.append(viz_source);
+            self.main_sink.append(viz_source);
         } else {
-            self.sink.append(source);
+            self.main_sink.append(source);
         }
 
         // Store for potential re-creation and status display
@@ -188,28 +201,28 @@ impl Player {
     /// Per locked decision: spacebar toggles play/pause. This is the only
     /// playback control in Phase 1.
     pub fn toggle_pause(&self) {
-        if self.sink.is_paused() {
-            self.sink.play();
+        if self.main_sink.is_paused() {
+            self.main_sink.play();
             tracing::info!("Playback resumed");
         } else {
-            self.sink.pause();
+            self.main_sink.pause();
             tracing::info!("Playback paused");
         }
     }
 
     /// Returns true if the Sink is currently paused.
     pub fn is_paused(&self) -> bool {
-        self.sink.is_paused()
+        self.main_sink.is_paused()
     }
 
     /// Returns true if audio is actively playing (not paused, not empty).
     pub fn is_playing(&self) -> bool {
-        !self.sink.is_paused() && !self.sink.empty()
+        !self.main_sink.is_paused() && !self.main_sink.empty()
     }
 
     /// Returns true if the current track has finished playing.
     pub fn is_finished(&self) -> bool {
-        self.sink.empty()
+        self.main_sink.empty()
     }
 
     /// Returns the name of the currently loaded track, if any.
@@ -221,19 +234,19 @@ impl Player {
     ///
     /// Delegates directly to the rodio Sink.
     pub fn volume(&self) -> f32 {
-        self.sink.volume()
+        self.main_sink.volume()
     }
 
     /// Increase volume by 0.05, clamped to 1.0 max.
     ///
     /// Values above 1.0 cause audio clipping, so we cap at 1.0.
     pub fn volume_up(&self) {
-        self.sink.set_volume((self.sink.volume() + 0.05).min(1.0));
+        self.main_sink.set_volume((self.main_sink.volume() + 0.05).min(1.0));
     }
 
     /// Decrease volume by 0.05, clamped to 0.0 min.
     pub fn volume_down(&self) {
-        self.sink.set_volume((self.sink.volume() - 0.05).max(0.0));
+        self.main_sink.set_volume((self.main_sink.volume() - 0.05).max(0.0));
     }
 
     /// Get the current playback position.
@@ -241,7 +254,7 @@ impl Player {
     /// Note: can briefly exceed track duration near end of playback.
     /// Callers must clamp when using for progress calculations.
     pub fn get_pos(&self) -> std::time::Duration {
-        self.sink.get_pos()
+        self.main_sink.get_pos()
     }
 
     /// Set volume directly to a specific level, clamped to 0.0..=1.0.
@@ -249,7 +262,7 @@ impl Player {
     /// Used by app.rs to restore the saved volume after creating a new Sink
     /// (each new Sink starts at volume 1.0).
     pub fn set_volume(&self, vol: f32) {
-        self.sink.set_volume(vol.clamp(0.0, 1.0));
+        self.main_sink.set_volume(vol.clamp(0.0, 1.0));
     }
 
     /// Seek forward by SEEK_STEP (5 seconds), clamped to track duration.
@@ -257,10 +270,10 @@ impl Player {
     /// Uses rodio's try_seek which may not be supported by all decoders.
     /// Callers should handle the error gracefully (log and ignore).
     pub fn seek_forward(&self, track_duration_ms: u64) -> Result<(), rodio::source::SeekError> {
-        let current = self.sink.get_pos();
+        let current = self.main_sink.get_pos();
         let max = Duration::from_millis(track_duration_ms);
         let target = (current + SEEK_STEP).min(max);
-        self.sink.try_seek(target)
+        self.main_sink.try_seek(target)
     }
 
     /// Seek backward by SEEK_STEP (5 seconds), saturating at 0.
@@ -268,9 +281,9 @@ impl Player {
     /// Uses rodio's try_seek which may not be supported by all decoders.
     /// Callers should handle the error gracefully (log and ignore).
     pub fn seek_backward(&self) -> Result<(), rodio::source::SeekError> {
-        let current = self.sink.get_pos();
+        let current = self.main_sink.get_pos();
         let target = current.saturating_sub(SEEK_STEP);
-        self.sink.try_seek(target)
+        self.main_sink.try_seek(target)
     }
 
     /// Replay the current track from cached audio bytes (Repeat One mode).
@@ -288,9 +301,9 @@ impl Player {
             .ok_or_else(|| color_eyre::eyre::eyre!("No audio data to replay"))?;
 
         // Stop current playback and create a fresh Sink
-        self.sink.stop();
-        self.sink = Sink::connect_new(self._stream.mixer());
-        self.sink.set_volume(volume.clamp(0.0, 1.0));
+        self.main_sink.stop();
+        self.main_sink = Sink::connect_new(self._stream.mixer());
+        self.main_sink.set_volume(volume.clamp(0.0, 1.0));
 
         // Decode from cached bytes and start playback.
         // Use the builder with byte_len and seekable for backward seek support.
@@ -305,13 +318,138 @@ impl Player {
         // Wrap with visualizer tap if data is provided
         if let Some(data) = visualizer_data {
             let viz_source = VisualizerSource::new(source, data, FFT_SIZE);
-            self.sink.append(viz_source);
+            self.main_sink.append(viz_source);
         } else {
-            self.sink.append(source);
+            self.main_sink.append(source);
         }
 
         tracing::info!("Replaying track (Repeat One)");
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Ambient channel methods
+    // -----------------------------------------------------------------------
+
+    /// Load an ambient track from audio bytes and start playback.
+    ///
+    /// Stops any currently playing ambient track, creates a fresh Sink on the
+    /// shared mixer, decodes the audio, and starts playback. The raw audio
+    /// bytes are cached for loop re-decode (manual loop to avoid
+    /// `repeat_infinite()` memory leak).
+    ///
+    /// Note: Ambient does NOT use VisualizerSource (visualizer taps main
+    /// channel only) and does NOT need seekable decoding (no seeking on
+    /// ambient tracks).
+    pub fn load_ambient(
+        &mut self,
+        audio_bytes: Vec<u8>,
+        track_name: String,
+        volume: f32,
+    ) -> Result<()> {
+        // Stop old ambient sink if any
+        if let Some(ref sink) = self.ambient_sink {
+            sink.stop();
+        }
+
+        // Create fresh sink on the shared mixer
+        let new_sink = Sink::connect_new(self._stream.mixer());
+        new_sink.set_volume(volume.clamp(0.0, 1.0));
+
+        // Decode audio bytes (no byte_len/seekable needed for ambient)
+        let cursor = Cursor::new(audio_bytes.clone());
+        let source = Decoder::builder()
+            .with_data(cursor)
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to decode ambient audio: {}", e))?;
+        new_sink.append(source);
+
+        // Store sink and cached data for loop re-decode
+        let name = track_name.clone();
+        self.ambient_sink = Some(new_sink);
+        self.ambient_audio_data = Some(audio_bytes);
+        self.ambient_track_name = Some(track_name);
+
+        tracing::info!(channel = "ambient", track = %name, "Ambient track loaded");
+        Ok(())
+    }
+
+    /// Stop ambient playback and clear all ambient state.
+    pub fn stop_ambient(&mut self) {
+        if let Some(ref sink) = self.ambient_sink {
+            sink.stop();
+        }
+        self.ambient_sink = None;
+        self.ambient_audio_data = None;
+        self.ambient_track_name = None;
+        tracing::info!(channel = "ambient", "Ambient stopped");
+    }
+
+    /// Returns true if the ambient sink has finished playing (queue empty).
+    ///
+    /// Returns false when no ambient is loaded (no ambient = not "finished",
+    /// because there is nothing to finish).
+    pub fn is_ambient_finished(&self) -> bool {
+        self.ambient_sink.as_ref().is_some_and(|s| s.empty())
+    }
+
+    /// Returns true if cached ambient audio data exists (for loop re-decode).
+    pub fn has_ambient_data(&self) -> bool {
+        self.ambient_audio_data.is_some()
+    }
+
+    /// Replay the ambient track from cached bytes (manual loop mechanism).
+    ///
+    /// Stops the old ambient sink, creates a fresh one on the shared mixer,
+    /// re-decodes from the cached compressed bytes, and starts playback.
+    /// This avoids rodio's `repeat_infinite()` memory leak (issue #673).
+    pub fn replay_ambient(&mut self, volume: f32) -> Result<()> {
+        let audio_bytes = self
+            .ambient_audio_data
+            .clone()
+            .ok_or_else(|| color_eyre::eyre::eyre!("No ambient audio data to replay"))?;
+
+        // Stop old ambient sink and create fresh one
+        if let Some(ref sink) = self.ambient_sink {
+            sink.stop();
+        }
+        let new_sink = Sink::connect_new(self._stream.mixer());
+        new_sink.set_volume(volume.clamp(0.0, 1.0));
+
+        // Decode from cached bytes
+        let cursor = Cursor::new(audio_bytes);
+        let source = Decoder::builder()
+            .with_data(cursor)
+            .build()
+            .map_err(|e| {
+                color_eyre::eyre::eyre!("Failed to decode ambient audio for replay: {}", e)
+            })?;
+        new_sink.append(source);
+
+        self.ambient_sink = Some(new_sink);
+        tracing::info!(channel = "ambient", "Ambient track loop restarted");
+        Ok(())
+    }
+
+    /// Set the ambient sink volume, clamped to 0.0..=1.0.
+    pub fn set_ambient_volume(&self, vol: f32) {
+        if let Some(ref sink) = self.ambient_sink {
+            sink.set_volume(vol.clamp(0.0, 1.0));
+        }
+    }
+
+    /// Get the name of the currently loaded ambient track, if any.
+    pub fn ambient_track_name(&self) -> Option<&str> {
+        self.ambient_track_name.as_deref()
+    }
+
+    /// Set the main sink volume directly, clamped to 0.0..=1.0.
+    ///
+    /// Used by App's volume budget enforcement to set the computed volume
+    /// on the main channel after budget + master scaling. Replaces the
+    /// old `set_volume` method for clarity now that there are two channels.
+    pub fn set_main_volume(&self, vol: f32) {
+        self.main_sink.set_volume(vol.clamp(0.0, 1.0));
     }
 }
 
