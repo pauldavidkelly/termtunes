@@ -45,11 +45,11 @@
   3. Ambient track loops continuously for 30+ minutes with stable memory usage (no growth beyond initial load)
   4. User can mute/unmute ambient at the audio engine level without affecting main music playback
   5. All existing v1.0 playback functionality works identically (no regressions from Player refactor)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 06-01: TBD
-- [ ] 06-02: TBD
+- [ ] 06-01-PLAN.md -- Refactor Player to dual-sink architecture with volume budget enforcement
+- [ ] 06-02-PLAN.md -- Wire ambient loop into event loop, test trigger, and WSL2 verification
 
 ### Phase 7: Track Browsing & Ambient Playback
 **Goal**: User can browse their Plex music library, select a track, and have it play as the ambient channel
