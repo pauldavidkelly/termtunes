@@ -196,6 +196,11 @@ impl App {
         self.now_playing.as_ref()
     }
 
+    /// Get the index of the currently playing track in the tracks list.
+    pub fn current_track_index(&self) -> Option<usize> {
+        self.current_track_index
+    }
+
     /// Get the saved volume level (0.0 to 1.0).
     pub fn saved_volume(&self) -> f32 {
         self.saved_volume
