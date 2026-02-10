@@ -12,21 +12,21 @@ Keep music playback inside the terminal workflow - no context switching to exter
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ Connect to existing Plex Media Server — v1.0
+- ✓ Display list of available playlists — v1.0
+- ✓ Select and play a playlist — v1.0
+- ✓ Playback controls (play, pause, skip forward/back) — v1.0
+- ✓ Shuffle mode for playlists — v1.0
+- ✓ Display current track information (artist, album, track name) — v1.0
+- ✓ Show playback progress and time — v1.0
+- ✓ Vim keybindings for navigation and control — v1.0
+- ✓ Visual spectrum equalizer animation (aesthetic, toggleable) — v1.0
+- ✓ Favorite playlists with quick keybindings (1-9 to instantly start) — v1.0
+- ✓ Local audio playback — v1.0
 
 ### Active
 
-- [ ] Connect to existing Plex Media Server
-- [ ] Display list of available playlists
-- [ ] Select and play a playlist
-- [ ] Playback controls (play, pause, skip forward/back)
-- [ ] Shuffle mode for playlists
-- [ ] Display current track information (artist, album, track name)
-- [ ] Show playback progress and time
-- [ ] Vim keybindings for navigation and control
-- [ ] Visual spectrum equalizer animation (aesthetic, toggleable)
-- [ ] Favorite playlists with quick keybindings (e.g., press 1-9 to instantly start a favorite)
-- [ ] Local audio playback
+(Empty — plan next milestone with `/gsd:new-milestone`)
 
 ### Out of Scope
 
@@ -43,6 +43,13 @@ Keep music playback inside the terminal workflow - no context switching to exter
 
 **User profile:** Vim power user with vim-tmux plugin for pane navigation. Keyboard-centric workflow, no mouse usage.
 
+**Current state (v1.0):**
+- 3,507 lines of Rust code
+- Tech stack: ratatui (TUI), rodio (audio), crossterm (terminal), reqwest (HTTP), spectrum-analyzer (FFT)
+- Features: PIN-based Plex auth, playlist browser, full playback controls, favorite hotkeys, shuffle/repeat/seek, tmux integration, session persistence, audio visualizer
+- Validated on WSL2 and Linux
+- All 42 v1.0 requirements satisfied
+
 ## Constraints
 
 - **Platform**: Must run on WSL and Linux
@@ -55,9 +62,14 @@ Keep music playback inside the terminal workflow - no context switching to exter
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Playlist-focused over library browsing | User's primary use case is selecting pre-made playlists for background music | — Pending |
-| Vim keybindings | User is vim power user, consistency with their existing workflow (NVIM, vim-tmux) | — Pending |
-| Toggleable visualizer | Adds terminal aesthetic but might be distracting during work | — Pending |
+| Playlist-focused over library browsing | User's primary use case is selecting pre-made playlists for background music | ✓ Good — v1.0 validated this is the right scope |
+| Vim keybindings | User is vim power user, consistency with their existing workflow (NVIM, vim-tmux) | ✓ Good — natural navigation, no learning curve |
+| Toggleable visualizer | Adds terminal aesthetic but might be distracting during work | ✓ Good — v toggle makes it optional, FFT adds zero overhead |
+| WSL2 validation first (Phase 1) | Audio reliability on WSL2 was highest risk | ✓ Good — caught buffer tuning issues early |
+| Download-then-play pattern | Streaming caused WSL2 audio dropouts | ✓ Good — eliminated all playback issues |
+| Favorite hotkeys (1-9) | Differentiation from other players | ✓ Good — instant playlist access is killer feature |
+| Session persistence | Resume playback across app restarts | ✓ Good — essential for background listening workflow |
+| Tmux status bar file | Show now-playing in tmux status line | ✓ Good — maintains context awareness across panes |
 
 ---
-*Last updated: 2026-02-08 after initialization*
+*Last updated: 2026-02-10 after v1.0 milestone*
