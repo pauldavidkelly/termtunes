@@ -120,13 +120,20 @@ impl Player {
     /// After calling stop() on a Sink, appending blocks until the queue
     /// flushes, so we create a fresh Sink for each new track to avoid any
     /// blocking issues.
-    pub fn load_and_play(&mut self, audio_bytes: Vec<u8>, track_name: String) -> Result<()> {
+    ///
+    /// The `volume` parameter restores the user's saved volume level on the
+    /// fresh Sink (each new Sink starts at 1.0, so we must explicitly set it).
+    pub fn load_and_play(&mut self, audio_bytes: Vec<u8>, track_name: String, volume: f32) -> Result<()> {
         // Stop current playback
         self.sink.stop();
 
         // Create a fresh Sink connected to the same output stream.
         // This avoids the blocking behavior of append-after-stop.
         self.sink = Sink::connect_new(self._stream.mixer());
+
+        // Restore the user's saved volume level on the new Sink.
+        // Each new Sink starts at volume 1.0, so we must explicitly set it.
+        self.sink.set_volume(volume.clamp(0.0, 1.0));
 
         // Decode and play
         let cursor = Cursor::new(audio_bytes.clone());
@@ -178,6 +185,41 @@ impl Player {
     /// Returns the name of the currently loaded track, if any.
     pub fn current_track_name(&self) -> Option<&str> {
         self.current_track.as_deref()
+    }
+
+    /// Get the current volume level (0.0 to 1.0).
+    ///
+    /// Delegates directly to the rodio Sink.
+    pub fn volume(&self) -> f32 {
+        self.sink.volume()
+    }
+
+    /// Increase volume by 0.05, clamped to 1.0 max.
+    ///
+    /// Values above 1.0 cause audio clipping, so we cap at 1.0.
+    pub fn volume_up(&self) {
+        self.sink.set_volume((self.sink.volume() + 0.05).min(1.0));
+    }
+
+    /// Decrease volume by 0.05, clamped to 0.0 min.
+    pub fn volume_down(&self) {
+        self.sink.set_volume((self.sink.volume() - 0.05).max(0.0));
+    }
+
+    /// Get the current playback position.
+    ///
+    /// Note: can briefly exceed track duration near end of playback.
+    /// Callers must clamp when using for progress calculations.
+    pub fn get_pos(&self) -> std::time::Duration {
+        self.sink.get_pos()
+    }
+
+    /// Set volume directly to a specific level, clamped to 0.0..=1.0.
+    ///
+    /// Used by app.rs to restore the saved volume after creating a new Sink
+    /// (each new Sink starts at volume 1.0).
+    pub fn set_volume(&self, vol: f32) {
+        self.sink.set_volume(vol.clamp(0.0, 1.0));
     }
 }
 
