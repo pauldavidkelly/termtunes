@@ -62,6 +62,25 @@ impl RepeatMode {
             Self::One => "[Repeat: One]",
         }
     }
+
+    /// Convert to a string representation for session persistence.
+    pub fn to_string_repr(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::All => "all",
+            Self::One => "one",
+        }
+    }
+
+    /// Create a RepeatMode from a string representation (session restore).
+    /// Returns Off for any unrecognized string.
+    pub fn from_string_repr(s: &str) -> Self {
+        match s {
+            "all" => Self::All,
+            "one" => Self::One,
+            _ => Self::Off,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +94,30 @@ pub struct NowPlaying {
     pub artist: String,
     pub album: String,
     pub duration_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Tmux now-playing file
+// ---------------------------------------------------------------------------
+
+/// Write content to the now-playing file for tmux status bar consumption.
+///
+/// File: `~/.local/share/termtunes/now_playing`
+/// Format: "Artist - Track" (playing), "|| Artist - Track" (paused), "" (stopped).
+///
+/// Best-effort: errors are logged but never propagated. This is cosmetic
+/// (tmux display) and must never affect playback or cause panics.
+fn write_now_playing_file(content: &str) {
+    let path = config::now_playing_path();
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!("Failed to create now_playing parent dir: {}", e);
+            return;
+        }
+    }
+    if let Err(e) = std::fs::write(&path, content) {
+        tracing::warn!("Failed to write now_playing file: {}", e);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +162,10 @@ pub struct App {
 
     /// Title of the currently selected playlist (for status bar).
     current_playlist_title: String,
+
+    /// Rating key of the currently selected/playing playlist (for session persistence).
+    /// Set when entering Tracks/Playing view or starting a favorite.
+    current_playlist_rating_key: Option<String>,
 
     /// Audio player (initialized lazily when first track is played).
     player: Option<Player>,
@@ -187,6 +234,7 @@ impl App {
             playlist_state,
             track_state: ListState::default(),
             current_playlist_title: String::new(),
+            current_playlist_rating_key: None,
             player: None,
             download_rx: None,
             error_message: None,
@@ -305,7 +353,11 @@ impl App {
                 if let Some(player) = &self.player {
                     if player.is_finished() {
                         tracing::info!("Track finished, auto-advancing");
-                        self.advance_track()?;
+                        let had_next = self.advance_track()?;
+                        if !had_next {
+                            // No next track -- clear now-playing file (playback stopped)
+                            write_now_playing_file("");
+                        }
                     }
                 }
             }
@@ -329,6 +381,10 @@ impl App {
                 }
             }
         }
+
+        // Save session state and clear now-playing file on graceful exit
+        self.save_session_state();
+        write_now_playing_file("");
 
         Ok(())
     }
@@ -378,10 +434,14 @@ impl App {
                                 // Populate NowPlaying metadata from the current track
                                 if let Some(idx) = self.current_track_index {
                                     if let Some(track) = self.tracks.get(idx) {
+                                        let artist = track.artist.clone().unwrap_or_else(|| "Unknown Artist".to_string());
+                                        let album = track.album.clone().unwrap_or_else(|| "Unknown Album".to_string());
+                                        // Write now-playing file for tmux status bar
+                                        write_now_playing_file(&format!("{} - {}", artist, track_name));
                                         self.now_playing = Some(NowPlaying {
                                             track_name,
-                                            artist: track.artist.clone().unwrap_or_else(|| "Unknown Artist".to_string()),
-                                            album: track.album.clone().unwrap_or_else(|| "Unknown Album".to_string()),
+                                            artist,
+                                            album,
                                             duration_ms: track.duration.unwrap_or(0),
                                         });
                                     }
@@ -429,6 +489,14 @@ impl App {
             (KeyCode::Char(' '), _) => {
                 if let Some(player) = &self.player {
                     player.toggle_pause();
+                    // Update tmux now-playing file with pause/resume state
+                    if let Some(np) = &self.now_playing {
+                        if player.is_paused() {
+                            write_now_playing_file(&format!("|| {} - {}", np.artist, np.track_name));
+                        } else {
+                            write_now_playing_file(&format!("{} - {}", np.artist, np.track_name));
+                        }
+                    }
                 }
             }
             // Volume up (PLAY-06) -- + or =
@@ -551,6 +619,7 @@ impl App {
                     if let Some(playlist) = self.playlists.get(idx) {
                         let rating_key = playlist.rating_key.clone();
                         self.current_playlist_title = playlist.title.clone();
+                        self.current_playlist_rating_key = Some(rating_key.clone());
 
                         tracing::info!(
                             playlist = %playlist.title,
@@ -667,6 +736,7 @@ impl App {
                 self.view = AppView::Playlists;
                 self.tracks.clear();
                 self.current_playlist_title.clear();
+                self.current_playlist_rating_key = None;
                 self.current_track_index = None;
                 self.now_playing = None;
                 // Clear shuffle order when leaving playlist. shuffle_enabled
@@ -827,7 +897,10 @@ impl App {
     ///
     /// Unlike next_track (user-initiated), this respects RepeatMode::One
     /// by replaying the current track from cached audio bytes.
-    fn advance_track(&mut self) -> Result<()> {
+    ///
+    /// Returns true if a new track was started, false if playback stopped
+    /// (end of playlist with RepeatMode::Off).
+    fn advance_track(&mut self) -> Result<bool> {
         match self.repeat_mode {
             RepeatMode::One => {
                 // Replay current track from cached bytes (no re-download)
@@ -840,7 +913,7 @@ impl App {
                         }
                     }
                 }
-                Ok(())
+                Ok(true)
             }
             RepeatMode::All => {
                 match self.next_track_index() {
@@ -848,7 +921,8 @@ impl App {
                         if self.shuffle_enabled {
                             self.shuffle_position += 1;
                         }
-                        self.play_track_at_index(idx)
+                        self.play_track_at_index(idx)?;
+                        Ok(true)
                     }
                     None => {
                         // End of playlist/shuffle order -- wrap
@@ -856,12 +930,14 @@ impl App {
                             self.regenerate_shuffle_order();
                             if let Some(&first) = self.shuffle_order.first() {
                                 self.shuffle_position = 0;
-                                self.play_track_at_index(first)
+                                self.play_track_at_index(first)?;
+                                Ok(true)
                             } else {
-                                Ok(())
+                                Ok(false)
                             }
                         } else {
-                            self.play_track_at_index(0)
+                            self.play_track_at_index(0)?;
+                            Ok(true)
                         }
                     }
                 }
@@ -872,9 +948,10 @@ impl App {
                         if self.shuffle_enabled {
                             self.shuffle_position += 1;
                         }
-                        self.play_track_at_index(idx)
+                        self.play_track_at_index(idx)?;
+                        Ok(true)
                     }
-                    None => Ok(()), // End of playlist -- stop
+                    None => Ok(false), // End of playlist -- stop
                 }
             }
         }
@@ -967,6 +1044,7 @@ impl App {
             Ok(tracks) => {
                 self.tracks = tracks;
                 self.current_playlist_title = fav.title;
+                self.current_playlist_rating_key = Some(fav.rating_key);
             }
             Err(e) => {
                 tracing::error!(key = %key, "Failed to fetch favorite playlist: {}", e);
@@ -1011,6 +1089,115 @@ impl App {
             player.volume_down();
             self.saved_volume = player.volume();
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Session persistence
+    // -----------------------------------------------------------------------
+
+    /// Save the current session state to disk for persistence across restarts.
+    ///
+    /// Constructs a Session from current app state and writes it to session.toml.
+    /// Called on graceful exit only (not on every track change).
+    fn save_session_state(&self) {
+        let session = config::Session {
+            playlist_rating_key: self.current_playlist_rating_key.clone(),
+            playlist_title: Some(self.current_playlist_title.clone()),
+            track_index: self.current_track_index,
+            volume: self.saved_volume,
+            shuffle_enabled: self.shuffle_enabled,
+            repeat_mode: self.repeat_mode.to_string_repr().to_string(),
+        };
+        if let Err(e) = config::save_session(&session) {
+            tracing::error!("Failed to save session state: {}", e);
+        }
+    }
+
+    /// Restore session state from disk, positioning the user at the saved
+    /// playlist and track without auto-playing.
+    ///
+    /// Best-effort: any errors (missing playlist, failed fetch) are logged
+    /// but do not prevent the app from starting. The user sees the Tracks view
+    /// at the saved position and must press Enter/Space to resume playback.
+    pub async fn restore_session(&mut self) {
+        let session = match config::load_session() {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Need a playlist rating key to restore
+        let rating_key = match &session.playlist_rating_key {
+            Some(key) if !key.is_empty() => key.clone(),
+            _ => return,
+        };
+
+        // Find the saved playlist in the fetched playlists
+        let playlist_idx = match self.playlists.iter().position(|p| p.rating_key == rating_key) {
+            Some(idx) => idx,
+            None => {
+                tracing::warn!(
+                    rating_key = %rating_key,
+                    "Session playlist not found in server playlists (may have been deleted)"
+                );
+                return;
+            }
+        };
+
+        // Fetch tracks for the saved playlist
+        let tracks = match self.plex_client.fetch_tracks(&rating_key).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!("Failed to fetch tracks for session restore: {}", e);
+                return;
+            }
+        };
+
+        if tracks.is_empty() {
+            tracing::warn!("Session playlist has no tracks, skipping restore");
+            return;
+        }
+
+        // Restore playlist state
+        let playlist_title = session
+            .playlist_title
+            .unwrap_or_else(|| self.playlists[playlist_idx].title.clone());
+        self.current_playlist_title = playlist_title;
+        self.current_playlist_rating_key = Some(rating_key);
+        self.tracks = tracks;
+
+        // Restore track selection (clamped to valid range)
+        let track_idx = session
+            .track_index
+            .unwrap_or(0)
+            .min(self.tracks.len().saturating_sub(1));
+        self.track_state = ListState::default();
+        self.track_state.select(Some(track_idx));
+        self.current_track_index = Some(track_idx);
+
+        // Restore playback settings
+        self.saved_volume = session.volume.clamp(0.0, 1.0);
+        self.shuffle_enabled = session.shuffle_enabled;
+        self.repeat_mode = RepeatMode::from_string_repr(&session.repeat_mode);
+
+        // Position at Tracks view (NOT Playing -- do NOT auto-play)
+        self.view = AppView::Tracks;
+
+        // Select the playlist in playlist_state to match
+        self.playlist_state.select(Some(playlist_idx));
+
+        // Regenerate shuffle order if shuffle was enabled
+        if self.shuffle_enabled {
+            self.regenerate_shuffle_order();
+        }
+
+        tracing::info!(
+            playlist = %self.current_playlist_title,
+            track_index = track_idx,
+            volume = self.saved_volume,
+            shuffle = self.shuffle_enabled,
+            repeat = ?self.repeat_mode,
+            "Session restored"
+        );
     }
 }
 

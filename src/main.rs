@@ -83,6 +83,11 @@ async fn main() -> Result<()> {
 
     // 11. Create and run the app with authenticated Plex client
     let mut app = App::new(config, shutdown, plex_client, server_name, playlists);
+
+    // 11b. Restore session state from previous run (best-effort).
+    // Positions user at saved playlist/track without auto-playing.
+    app.restore_session().await;
+
     let result = app.run(&mut terminal).await;
 
     // 12. Restore terminal state (leave alternate screen, disable raw mode)
