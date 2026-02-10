@@ -5,17 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-02-10)
 
 **Core value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
-**Current focus:** v1.0 shipped — Planning next milestone
+**Current focus:** v1.1 Multi-Channel Audio
 
 ## Current Position
 
-Milestone: v1.0 MVP — SHIPPED 2026-02-10
-Status: 5 phases complete (10 plans, 42/42 requirements)
-Last activity: 2026-02-10 — Milestone v1.0 archived
-
-Progress: [████████████████████] 100% (v1.0 complete)
-
-**Next:** Plan v1.1 or v2.0 with `/gsd:new-milestone`
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-02-10 — Milestone v1.1 started
 
 ## Performance Metrics
 

@@ -8,6 +8,18 @@ A TUI (Terminal User Interface) music player for Plex Media Server that lives in
 
 Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
 
+## Current Milestone: v1.1 Multi-Channel Audio
+
+**Goal:** Layer ambient tracks underneath music playlists for enhanced focus during deep work.
+
+**Target features:**
+- Browse and select individual tracks from Plex library (not just playlists)
+- Play ambient track on separate channel with auto-loop
+- Independent volume controls for main music and ambient channels
+- Toggle ambient on/off as needed
+- Persist ambient track selection and settings across sessions
+- Small UI panel showing ambient track status
+
 ## Requirements
 
 ### Validated
@@ -26,14 +38,21 @@ Keep music playback inside the terminal workflow - no context switching to exter
 
 ### Active
 
-(Empty — plan next milestone with `/gsd:new-milestone`)
+- [ ] Browse and select individual tracks from Plex library
+- [ ] Play ambient track on separate audio channel
+- [ ] Ambient track auto-loops continuously
+- [ ] Independent volume control for ambient channel
+- [ ] Toggle ambient channel on/off
+- [ ] Ambient track persists across sessions
+- [ ] UI panel showing ambient track status
 
 ### Out of Scope
 
-- Album/artist browsing — Focus is playlist-based listening, not library exploration
+- Ambient playlists — v1.1 focuses on single looping tracks, playlists deferred to future
 - Queue management — Simple playlist playback, not manual queue building
 - Smart features (radio, mixes, recommendations) — Using Plex's existing playlists
 - Mobile or non-terminal interfaces — Terminal-only
+- Full library exploration — Track browsing limited to ambient selection, not general library browsing
 
 ## Context
 
@@ -72,4 +91,4 @@ Keep music playback inside the terminal workflow - no context switching to exter
 | Tmux status bar file | Show now-playing in tmux status line | ✓ Good — maintains context awareness across panes |
 
 ---
-*Last updated: 2026-02-10 after v1.0 milestone*
+*Last updated: 2026-02-10 after v1.1 milestone start*
