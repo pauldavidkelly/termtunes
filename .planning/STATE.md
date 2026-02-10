@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-08)
 
 **Core value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
-**Current focus:** Phase 4 in progress -- Tmux Integration and Polish
+**Current focus:** Phase 4 COMPLETE -- Tmux Integration and Polish
 
 ## Current Position
 
-Phase: 4 of 5 (Tmux Integration & Polish)
-Plan: 1 of 2 in current phase (04-01 complete)
-Status: 04-01 complete -- adaptive layout and resize handling shipped
-Last activity: 2026-02-10 -- Completed 04-01 (Adaptive Layout, Resize Handling)
+Phase: 4 of 5 (Tmux Integration & Polish) -- COMPLETE
+Plan: 2 of 2 in current phase (04-02 complete)
+Status: Phase 4 complete -- adaptive layout, tmux now-playing, session persistence all shipped
+Last activity: 2026-02-10 -- Completed 04-02 (Tmux Integration & Session Persistence)
 
-Progress: [██████████░░░░░░░░░░] 50% (Phase 4)
+Progress: [████████████████████] 100% (Phase 4)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 8
+- Total plans completed: 9
 - Average duration: ~10 min
-- Total execution time: ~1.43 hours
+- Total execution time: ~1.47 hours
 
 **By Phase:**
 
@@ -30,10 +30,10 @@ Progress: [██████████░░░░░░░░░░] 50% (Ph
 | 01-foundation-audio-poc | 3/3 | ~58 min | ~19 min |
 | 02-core-tui-playback | 2/2 | ~14 min | ~7 min |
 | 03-differentiators | 2/2 | ~11 min | ~5.5 min |
-| 04-tmux-integration-polish | 1/2 | ~2 min | ~2 min |
+| 04-tmux-integration-polish | 2/2 | ~4 min | ~2 min |
 
 **Recent Trend:**
-- Last 5 plans: 02-02 (~11 min), 03-01 (~3 min), 03-02 (~8 min), 04-01 (~2 min)
+- Last 5 plans: 03-01 (~3 min), 03-02 (~8 min), 04-01 (~2 min), 04-02 (~2 min)
 - Trend: Plans consistently fast as codebase is well-understood and plans are precise
 
 *Updated after each plan completion*
@@ -85,6 +85,11 @@ Recent decisions affecting current work:
 - [04-01]: Playlist truncation drops track count suffix first, then truncates title with ellipsis
 - [04-01]: Narrow player bar: line 1 = icon + track name only; line 3 = state + time only
 - [04-01]: truncate_for_display uses .chars().take() for UTF-8 safety (not byte-based truncation)
+- [04-02]: Session saved only on graceful exit (q or signal), not per track change
+- [04-02]: now_playing file writes are best-effort (tracing::warn on failure, never propagated)
+- [04-02]: Session restore does NOT auto-play -- positions user at saved track in Tracks view
+- [04-02]: go_back() preserves session-relevant fields so save works from any view
+- [04-02]: RepeatMode string conversion via to_string_repr/from_string_repr for TOML serialization
 
 ### Pending Todos
 
@@ -97,5 +102,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-10
-Stopped at: Completed 04-01-PLAN.md (Adaptive Layout, Resize Handling)
-Resume file: .planning/phases/04-tmux-integration-polish/04-01-SUMMARY.md
+Stopped at: Completed 04-02-PLAN.md (Tmux Integration & Session Persistence) -- Phase 4 complete
+Resume file: .planning/phases/04-tmux-integration-polish/04-02-SUMMARY.md
