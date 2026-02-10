@@ -43,7 +43,12 @@ async fn main() -> Result<()> {
     // 3. Set PULSE_LATENCY_MSEC to improve WSL2 audio latency.
     //    Must be set BEFORE creating any OutputStream/audio device.
     //    See research: WSLg PulseAudio bridge benefits from increased buffer.
-    std::env::set_var("PULSE_LATENCY_MSEC", "60");
+    //    Safety: called at startup before any threads are spawned.
+    unsafe { std::env::set_var("PULSE_LATENCY_MSEC", "60") };
+
+    // 3b. Check WSL2 audio dependencies early and warn the user while we
+    //     are still on the normal terminal (not alternate screen).
+    check_wsl2_audio_deps();
 
     // 4. Install panic hook BEFORE terminal init so panics restore terminal
     tui::install_panic_hook();
@@ -81,4 +86,58 @@ async fn main() -> Result<()> {
 
     // 13. Propagate any error from the app run
     result
+}
+
+/// Check WSL2 audio dependencies at startup and print warnings.
+///
+/// On WSL2, audio requires: (1) the ALSA PulseAudio plugin (`libasound2-plugins`)
+/// to bridge ALSA -> PulseAudio, and (2) the WSLg PulseAudio socket. This check
+/// runs before the TUI starts so messages appear on the normal terminal.
+fn check_wsl2_audio_deps() {
+    // Only relevant on WSL2
+    let is_wsl = std::fs::read_to_string("/proc/version")
+        .map(|v| v.contains("microsoft") || v.contains("WSL"))
+        .unwrap_or(false);
+
+    if !is_wsl {
+        return;
+    }
+
+    tracing::info!("WSL2 detected, checking audio dependencies");
+
+    // Check for the ALSA PulseAudio plugin library
+    let plugin_paths = [
+        "/usr/lib/x86_64-linux-gnu/alsa-lib/libasound_module_pcm_pulse.so",
+        "/usr/lib/alsa-lib/libasound_module_pcm_pulse.so",
+        "/usr/lib/aarch64-linux-gnu/alsa-lib/libasound_module_pcm_pulse.so",
+    ];
+    let has_plugin = plugin_paths.iter().any(|p| std::path::Path::new(p).exists());
+
+    if !has_plugin {
+        eprintln!();
+        eprintln!("  WARNING: WSL2 audio requires the ALSA PulseAudio plugin.");
+        eprintln!("  Audio playback will not work without it.");
+        eprintln!();
+        eprintln!("  Install with:  sudo apt-get install -y libasound2-plugins");
+        eprintln!();
+        tracing::warn!("libasound2-plugins not found -- audio will fail on WSL2");
+    }
+
+    // Check for the WSLg PulseAudio socket
+    let has_socket = std::path::Path::new("/mnt/wslg/PulseServer").exists();
+    if !has_socket {
+        eprintln!();
+        eprintln!("  WARNING: WSLg PulseAudio socket not found.");
+        eprintln!("  Try restarting WSL:  wsl --shutdown");
+        eprintln!();
+        tracing::warn!("WSLg PulseAudio socket not found at /mnt/wslg/PulseServer");
+    }
+
+    // Check PULSE_SERVER env var
+    let pulse_server = std::env::var("PULSE_SERVER").unwrap_or_default();
+    if pulse_server.is_empty() {
+        tracing::warn!("PULSE_SERVER environment variable not set");
+    } else {
+        tracing::info!(pulse_server = %pulse_server, "PulseAudio server configured");
+    }
 }

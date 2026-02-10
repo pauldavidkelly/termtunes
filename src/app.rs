@@ -80,6 +80,11 @@ pub struct App {
     /// Channel receiver for completed track downloads.
     /// The background download thread sends (audio_bytes, track_name) when done.
     download_rx: Option<std::sync::mpsc::Receiver<Result<(Vec<u8>, String)>>>,
+
+    /// Error message to display in the status bar. Set when audio device
+    /// initialization fails or download errors occur. Cleared on next
+    /// successful action.
+    error_message: Option<String>,
 }
 
 impl App {
@@ -110,6 +115,7 @@ impl App {
             current_playlist_title: String::new(),
             player: None,
             download_rx: None,
+            error_message: None,
         }
     }
 
@@ -150,6 +156,11 @@ impl App {
     /// Get a reference to the player (if initialized).
     pub fn player(&self) -> Option<&Player> {
         self.player.as_ref()
+    }
+
+    /// Get the current error message (if any), for display in the status bar.
+    pub fn error_message(&self) -> Option<&str> {
+        self.error_message.as_deref()
     }
 
     // -----------------------------------------------------------------------
@@ -207,22 +218,38 @@ impl App {
                     // Initialize player if this is the first track
                     if self.player.is_none() {
                         match Player::new() {
-                            Ok(p) => self.player = Some(p),
+                            Ok(p) => {
+                                self.player = Some(p);
+                                // Clear any previous audio error
+                                self.error_message = None;
+                            }
                             Err(e) => {
                                 tracing::error!("Failed to create audio player: {}", e);
+                                // Show the error in the status bar instead of crashing.
+                                // Extract the most useful part of the error message.
+                                self.error_message = Some(format!("{}", e));
                                 self.view = AppView::Tracks;
                                 self.download_rx = None;
-                                return Err(e);
+                                return Ok(());
                             }
                         }
                     }
 
                     // Start playback
                     if let Some(player) = &mut self.player {
-                        player.load_and_play(audio_bytes, track_name)?;
+                        match player.load_and_play(audio_bytes, track_name) {
+                            Ok(()) => {
+                                self.view = AppView::Playing;
+                                self.error_message = None;
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to start playback: {}", e);
+                                self.error_message = Some(format!("Playback error: {}", e));
+                                self.view = AppView::Tracks;
+                            }
+                        }
                     }
 
-                    self.view = AppView::Playing;
                     self.download_rx = None;
                 }
                 Ok(Err(e)) => {

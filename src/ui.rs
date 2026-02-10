@@ -107,11 +107,18 @@ fn render_downloading(frame: &mut Frame, area: ratatui::layout::Rect) {
 /// Render the status bar at the bottom of the screen.
 ///
 /// Content varies based on playback state:
+/// - Error: error message with red background
 /// - No track: help text with keybindings
 /// - Playing: " >> {track_name} " with green background
 /// - Paused:  " || {track_name} " with yellow background
 fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let (text, style) = if let Some(player) = app.player() {
+    // Show error message if one exists (takes priority over playback status)
+    let (text, style) = if let Some(err) = app.error_message() {
+        (
+            format!(" ERROR: {} ", err),
+            Style::default().fg(Color::White).bg(Color::Red),
+        )
+    } else if let Some(player) = app.player() {
         if let Some(track_name) = player.current_track_name() {
             if player.is_paused() {
                 (

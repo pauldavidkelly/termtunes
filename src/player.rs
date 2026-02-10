@@ -1,4 +1,5 @@
 use std::io::Cursor;
+use std::path::PathBuf;
 
 use color_eyre::Result;
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink};
@@ -28,12 +29,60 @@ pub struct Player {
 impl Player {
     /// Create a new Player by opening the default audio output device.
     ///
-    /// Uses OutputStreamBuilder::open_default_stream() which tries the default
-    /// device first, then falls back to alternative devices/configs.
+    /// On WSL2, cpal uses the ALSA host which needs the `libasound2-plugins`
+    /// package and an `~/.asoundrc` config to route audio through PulseAudio
+    /// (provided by WSLg). This method ensures the ALSA config exists before
+    /// attempting to open the stream, and provides clear diagnostics on failure.
     pub fn new() -> Result<Self> {
-        let stream = OutputStreamBuilder::open_default_stream()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to open audio output: {}", e))?;
+        // On WSL2, ensure ALSA is configured to use PulseAudio before opening
+        // the audio stream. Without this, ALSA cannot find a sound card.
+        if is_wsl2() {
+            ensure_alsa_pulse_config()?;
+        }
+
+        let stream = OutputStreamBuilder::open_default_stream().map_err(|e| {
+            let msg = format!("Failed to open audio output: {}", e);
+            if is_wsl2() {
+                // Provide WSL2-specific diagnostics
+                let has_plugin = alsa_pulse_plugin_exists();
+                let has_socket = std::path::Path::new("/mnt/wslg/PulseServer").exists();
+                let pulse_server = std::env::var("PULSE_SERVER").unwrap_or_default();
+
+                tracing::error!(
+                    has_alsa_pulse_plugin = has_plugin,
+                    has_wslg_socket = has_socket,
+                    pulse_server = %pulse_server,
+                    "WSL2 audio device initialization failed"
+                );
+
+                if !has_plugin {
+                    color_eyre::eyre::eyre!(
+                        "{}\n\nWSL2 audio requires the ALSA PulseAudio plugin.\n\
+                         Install it with: sudo apt-get install -y libasound2-plugins\n\
+                         Then restart the application.",
+                        msg
+                    )
+                } else if !has_socket {
+                    color_eyre::eyre::eyre!(
+                        "{}\n\nWSLg PulseAudio socket not found at /mnt/wslg/PulseServer.\n\
+                         WSLg may not be running. Try restarting WSL with: wsl --shutdown\n\
+                         Then reopen your terminal and try again.",
+                        msg
+                    )
+                } else {
+                    color_eyre::eyre::eyre!("{}", msg)
+                }
+            } else {
+                color_eyre::eyre::eyre!("{}", msg)
+            }
+        })?;
+
         let sink = Sink::connect_new(stream.mixer());
+
+        tracing::info!(
+            config = ?stream.config(),
+            "Audio output stream opened successfully"
+        );
 
         Ok(Self {
             _stream: stream,
@@ -130,4 +179,72 @@ impl Player {
     pub fn current_track_name(&self) -> Option<&str> {
         self.current_track.as_deref()
     }
+}
+
+// ---------------------------------------------------------------------------
+// WSL2 audio helpers
+// ---------------------------------------------------------------------------
+
+/// Detect whether we are running inside WSL2.
+///
+/// Checks for the WSL-specific kernel version string in /proc/version.
+fn is_wsl2() -> bool {
+    std::fs::read_to_string("/proc/version")
+        .map(|v| v.contains("microsoft") || v.contains("WSL"))
+        .unwrap_or(false)
+}
+
+/// Check if the ALSA PulseAudio plugin library is installed.
+///
+/// On Debian/Ubuntu this is provided by `libasound2-plugins`. Without it,
+/// ALSA cannot route audio through PulseAudio (required on WSL2).
+fn alsa_pulse_plugin_exists() -> bool {
+    // Check common library paths for the ALSA PulseAudio PCM plugin
+    let paths = [
+        "/usr/lib/x86_64-linux-gnu/alsa-lib/libasound_module_pcm_pulse.so",
+        "/usr/lib/alsa-lib/libasound_module_pcm_pulse.so",
+        "/usr/lib/aarch64-linux-gnu/alsa-lib/libasound_module_pcm_pulse.so",
+    ];
+    paths.iter().any(|p| std::path::Path::new(p).exists())
+}
+
+/// Ensure ALSA is configured to route through PulseAudio on WSL2.
+///
+/// Creates `~/.asoundrc` if it does not already exist, configuring ALSA's
+/// default PCM and control devices to use the PulseAudio plugin. This is
+/// required because WSL2 has no physical sound card -- audio must go through
+/// the WSLg PulseAudio bridge.
+///
+/// If the file already exists, it is left untouched (the user may have
+/// custom ALSA configuration).
+fn ensure_alsa_pulse_config() -> Result<()> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| String::from("/root"));
+    let asoundrc = PathBuf::from(&home).join(".asoundrc");
+
+    if asoundrc.exists() {
+        tracing::debug!(path = %asoundrc.display(), "ALSA config already exists, skipping creation");
+        return Ok(());
+    }
+
+    // ALSA configuration that routes all audio through PulseAudio.
+    // This is the standard WSL2/WSLg audio setup.
+    let config = "\
+# Auto-generated by TermTunes for WSL2 audio support.
+# Routes ALSA audio through PulseAudio (provided by WSLg).
+# Delete this file if you want to manage ALSA configuration manually.
+
+pcm.default pulse
+pcm.!default pulse
+
+ctl.default pulse
+ctl.!default pulse
+";
+
+    std::fs::write(&asoundrc, config)?;
+    tracing::info!(
+        path = %asoundrc.display(),
+        "Created ALSA config for WSL2 PulseAudio routing"
+    );
+
+    Ok(())
 }
