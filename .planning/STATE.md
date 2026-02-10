@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-08)
 
 **Core value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
-**Current focus:** Phase 3 complete -- ready for Phase 4 (Polish and UX)
+**Current focus:** Phase 4 in progress -- Tmux Integration and Polish
 
 ## Current Position
 
-Phase: 3 of 5 (Differentiators) -- COMPLETE
-Plan: 2 of 2 in current phase (all done)
-Status: Phase 3 complete -- all differentiators shipped and verified
-Last activity: 2026-02-10 -- Completed 03-02 (Favorites, UI Indicators)
+Phase: 4 of 5 (Tmux Integration & Polish)
+Plan: 1 of 2 in current phase (04-01 complete)
+Status: 04-01 complete -- adaptive layout and resize handling shipped
+Last activity: 2026-02-10 -- Completed 04-01 (Adaptive Layout, Resize Handling)
 
-Progress: [████████████████████] 100% (Phase 3)
+Progress: [██████████░░░░░░░░░░] 50% (Phase 4)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 7
-- Average duration: ~11 min
-- Total execution time: ~1.40 hours
+- Total plans completed: 8
+- Average duration: ~10 min
+- Total execution time: ~1.43 hours
 
 **By Phase:**
 
@@ -30,9 +30,10 @@ Progress: [████████████████████] 100% (P
 | 01-foundation-audio-poc | 3/3 | ~58 min | ~19 min |
 | 02-core-tui-playback | 2/2 | ~14 min | ~7 min |
 | 03-differentiators | 2/2 | ~11 min | ~5.5 min |
+| 04-tmux-integration-polish | 1/2 | ~2 min | ~2 min |
 
 **Recent Trend:**
-- Last 5 plans: 02-01 (~3 min), 02-02 (~11 min), 03-01 (~3 min), 03-02 (~8 min)
+- Last 5 plans: 02-02 (~11 min), 03-01 (~3 min), 03-02 (~8 min), 04-01 (~2 min)
 - Trend: Plans consistently fast as codebase is well-understood and plans are precise
 
 *Updated after each plan completion*
@@ -80,6 +81,10 @@ Recent decisions affecting current work:
 - [03-02]: Two-key modal: press f enters awaiting_favorite_key state, then 1-9 assigns
 - [03-02]: Favorite activation (1-9) works from any view, assignment (f) only from Playlists view
 - [03-02]: Shuffle indicator in magenta, repeat indicator in blue for visual distinction
+- [04-01]: Width thresholds as constants: MIN_WIDTH=20, MIN_HEIGHT=5, NARROW_WIDTH=40
+- [04-01]: Playlist truncation drops track count suffix first, then truncates title with ellipsis
+- [04-01]: Narrow player bar: line 1 = icon + track name only; line 3 = state + time only
+- [04-01]: truncate_for_display uses .chars().take() for UTF-8 safety (not byte-based truncation)
 
 ### Pending Todos
 
@@ -92,5 +97,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-10
-Stopped at: Completed 03-02-PLAN.md (Favorites, UI Indicators) -- Phase 3 fully complete
-Resume file: .planning/phases/03-differentiators/03-02-SUMMARY.md
+Stopped at: Completed 04-01-PLAN.md (Adaptive Layout, Resize Handling)
+Resume file: .planning/phases/04-tmux-integration-polish/04-01-SUMMARY.md
