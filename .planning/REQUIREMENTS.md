@@ -1,71 +1,50 @@
-# Requirements: TermTunes
+# Requirements: TermTunes v1.1
 
-**Defined:** 2026-02-08
+**Defined:** 2026-02-10
 **Core Value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
 
-## v1 Requirements
+## v1.1 Requirements
 
-Requirements for initial release. Each maps to roadmap phases.
+Requirements for multi-channel audio (ambient layer). Each maps to roadmap phases.
 
-### Authentication
+### Audio Engine
 
-- [ ] **AUTH-01**: User can authenticate with Plex server via PIN-based OAuth flow
-- [ ] **AUTH-02**: Application persists authentication token across restarts
-- [ ] **AUTH-03**: Application detects expired tokens and prompts re-authentication
-- [ ] **AUTH-04**: Application validates token on startup
+- [ ] **AUDIO-01**: System creates second audio sink for ambient channel on same OutputStream
+- [ ] **AUDIO-02**: User can set ambient volume independently from main music volume
+- [ ] **AUDIO-03**: System enforces volume budget (main + ambient <= 1.0) to prevent clipping
+- [ ] **AUDIO-04**: User can toggle ambient channel on/off (mute/unmute)
+- [ ] **AUDIO-05**: Ambient track loops continuously using manual re-append (not repeat_infinite)
+- [ ] **AUDIO-06**: System maintains stable memory usage during extended ambient looping
+- [ ] **AUDIO-07**: Main music playback continues uninterrupted while ambient plays
 
-### Playback
+### Track Selection
 
-- [ ] **PLAY-01**: User can play a selected playlist from Plex
-- [ ] **PLAY-02**: User can pause playback
-- [ ] **PLAY-03**: User can stop playback
-- [ ] **PLAY-04**: User can skip to next track
-- [ ] **PLAY-05**: User can skip to previous track
-- [ ] **PLAY-06**: User can increase volume
-- [ ] **PLAY-07**: User can decrease volume
-- [ ] **PLAY-08**: User can toggle shuffle mode for current playlist
-- [ ] **PLAY-09**: User can cycle through repeat modes (off/all/one)
-- [ ] **PLAY-10**: User can seek forward within current track
-- [ ] **PLAY-11**: User can seek backward within current track
+- [ ] **TRACK-01**: User can browse Plex music library sections
+- [ ] **TRACK-02**: User can view list of tracks within a library section
+- [ ] **TRACK-03**: User can select a track from library for ambient channel
+- [ ] **TRACK-04**: System downloads selected ambient track to local temp storage
+- [ ] **TRACK-05**: Ambient track starts playing automatically after download completes
+- [ ] **TRACK-06**: User can change ambient track without stopping main music
 
-### Playlists
+### UI & Controls
 
-- [ ] **LIST-01**: Application displays list of all available playlists from Plex server
-- [ ] **LIST-02**: User can navigate playlist list with keyboard
-- [ ] **LIST-03**: User can select a playlist to play
-- [ ] **LIST-04**: User can assign up to 9 playlists as favorites (1-9 keybindings)
-- [ ] **LIST-05**: User can start a favorite playlist by pressing its assigned number key
+- [ ] **UI-01**: User sees ambient track status in dedicated UI panel (track name, play/pause state)
+- [ ] **UI-02**: User can open track browser as modal popup overlay
+- [ ] **UI-03**: Track browser displays without interrupting current playback
+- [ ] **UI-04**: User can navigate track browser with vim-style keybindings
+- [ ] **UI-05**: UI shows current ambient volume level
+- [ ] **UI-06**: User can adjust ambient volume up/down with dedicated keybindings
+- [ ] **UI-07**: User can toggle ambient on/off with dedicated keybinding
+- [ ] **UI-08**: User can open ambient track browser with dedicated keybinding
+- [ ] **UI-09**: Ambient track browser closes after selection or cancel
 
-### Display
+### Persistence
 
-- [ ] **DISP-01**: Application displays current track name
-- [ ] **DISP-02**: Application displays current track artist
-- [ ] **DISP-03**: Application displays current track album
-- [ ] **DISP-04**: Application displays playback progress bar
-- [ ] **DISP-05**: Application displays elapsed time and total duration
-- [ ] **DISP-06**: Application displays current playback state (playing/paused/stopped)
-- [ ] **DISP-07**: Application displays current volume level
-- [ ] **DISP-08**: Application displays shuffle and repeat mode indicators
-- [ ] **DISP-09**: Application adapts layout for small terminal panes (30-40 columns)
-- [ ] **DISP-10**: Application handles terminal resize gracefully
-
-### Keybindings
-
-- [ ] **KEY-01**: User can navigate lists with j/k (vim-style down/up)
-- [ ] **KEY-02**: User can select items with Enter
-- [ ] **KEY-03**: User can toggle play/pause with Space
-- [ ] **KEY-04**: User can quit application with q
-- [ ] **KEY-05**: All navigation and controls work without mouse input
-- [ ] **KEY-06**: User can seek with h/l (vim-style left/right)
-
-### Integration & Polish
-
-- [ ] **POL-01**: Application displays toggleable audio visualizer (spectrum)
-- [ ] **POL-02**: User can toggle visualizer on/off with v key
-- [ ] **POL-03**: Application writes current track info to file for tmux status bar integration
-- [ ] **POL-04**: Application persists playback session (playlist, position) across restarts
-- [ ] **POL-05**: Application restores last session on startup
-- [ ] **POL-06**: Application runs reliably on WSL2 and Linux
+- [ ] **PERSIST-01**: System saves ambient track selection across app restarts
+- [ ] **PERSIST-02**: System saves ambient volume setting across app restarts
+- [ ] **PERSIST-03**: System saves ambient on/off state across app restarts
+- [ ] **PERSIST-04**: System resumes ambient playback on startup if it was playing
+- [ ] **PERSIST-05**: Ambient volume defaults to 30% lower than main music on first use
 
 ## v2 Requirements
 
@@ -73,11 +52,12 @@ Deferred to future release. Tracked but not in current roadmap.
 
 ### Advanced Features
 
-- **ADV-01**: Application supports MPRIS D-Bus interface for media key control
-- **ADV-02**: Application supports gapless playback between tracks
-- **ADV-03**: Application displays synced lyrics when available
-- **ADV-04**: Application supports Last.fm scrobbling
-- **ADV-05**: User can search/filter playlists by name
+- **ADV-01**: User can assign ambient track to favorite hotkey (0 or a1-a9)
+- **ADV-02**: User can search/filter tracks in browser
+- **ADV-03**: User can browse hierarchical library (artists -> albums -> tracks)
+- **ADV-04**: User can create ambient playlists (multiple looping tracks)
+- **ADV-05**: User can set crossfade between ambient tracks
+- **ADV-06**: System provides master volume control affecting both channels
 
 ## Out of Scope
 
@@ -85,14 +65,14 @@ Explicitly excluded. Documented to prevent scope creep.
 
 | Feature | Reason |
 |---------|--------|
-| Full library browsing (artists/albums/tracks) | Playlist-focused design. Library browsing is a separate product. Use Plex web UI for exploration. |
-| Manual queue management | Contradicts simple playlist playback model. Adds significant UI complexity. |
-| Smart recommendations/radio/AI mixes | Complex Plex API features outside scope. Users curate playlists in Plex. |
-| Crossfade/EQ/audio effects | Significant audio processing complexity. System-level configuration more appropriate. |
-| Mouse support | Target user is keyboard-only (vim power user). Mouse handling adds unnecessary complexity. |
-| Tag editing | Dangerous to modify Plex metadata from terminal. Use Plex web UI. |
-| Downloading/offline mode | Plex handles streaming. Offline storage creates complexity. Streaming-only is acceptable. |
-| Multi-server support | One server is expected use case. Single-server keeps configuration simple. |
+| More than 2 audio channels | UI complexity explosion, diminishing returns for terminal workflow |
+| Ambient playlists | v1.1 focuses on single looping tracks, playlists deferred to v2 |
+| Streaming ambient (vs download-then-play) | Existing download pattern is proven reliable on WSL2 |
+| Crossfade between tracks | Abrupt loop is acceptable for MVP, adds complexity |
+| Master volume (affects both channels) | Independent control is simpler and more flexible |
+| Real-time audio mixing at Source level | Dual-Sink architecture is cleaner, validated in research |
+| Hierarchical artist/album browsing | Flat track list sufficient for ambient selection use case |
+| Ambient visualizer | Main music visualizer is the focus, ambient is background |
 
 ## Traceability
 
@@ -100,54 +80,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| AUTH-01 | Phase 1 | Pending |
-| AUTH-02 | Phase 1 | Pending |
-| AUTH-03 | Phase 1 | Pending |
-| AUTH-04 | Phase 1 | Pending |
-| PLAY-01 | Phase 1 | Pending |
-| PLAY-02 | Phase 1 | Pending |
-| PLAY-03 | Phase 1 | Pending |
-| PLAY-04 | Phase 2 | Pending |
-| PLAY-05 | Phase 2 | Pending |
-| PLAY-06 | Phase 2 | Pending |
-| PLAY-07 | Phase 2 | Pending |
-| PLAY-08 | Phase 3 | Pending |
-| PLAY-09 | Phase 3 | Pending |
-| PLAY-10 | Phase 3 | Pending |
-| PLAY-11 | Phase 3 | Pending |
-| LIST-01 | Phase 2 | Pending |
-| LIST-02 | Phase 2 | Pending |
-| LIST-03 | Phase 2 | Pending |
-| LIST-04 | Phase 3 | Pending |
-| LIST-05 | Phase 3 | Pending |
-| DISP-01 | Phase 2 | Pending |
-| DISP-02 | Phase 2 | Pending |
-| DISP-03 | Phase 2 | Pending |
-| DISP-04 | Phase 2 | Pending |
-| DISP-05 | Phase 2 | Pending |
-| DISP-06 | Phase 2 | Pending |
-| DISP-07 | Phase 2 | Pending |
-| DISP-08 | Phase 3 | Pending |
-| DISP-09 | Phase 4 | Pending |
-| DISP-10 | Phase 4 | Pending |
-| KEY-01 | Phase 2 | Pending |
-| KEY-02 | Phase 2 | Pending |
-| KEY-03 | Phase 2 | Pending |
-| KEY-04 | Phase 1 | Pending |
-| KEY-05 | Phase 2 | Pending |
-| KEY-06 | Phase 3 | Pending |
-| POL-01 | Phase 5 | Pending |
-| POL-02 | Phase 5 | Pending |
-| POL-03 | Phase 4 | Pending |
-| POL-04 | Phase 4 | Pending |
-| POL-05 | Phase 4 | Pending |
-| POL-06 | Phase 1 | Pending |
+| *(To be filled by roadmapper)* | | |
 
 **Coverage:**
-- v1 requirements: 42 total
-- Mapped to phases: 42
-- Unmapped: 0
+- v1.1 requirements: 25 total
+- Mapped to phases: 0
+- Unmapped: 25 ⚠️
 
 ---
-*Requirements defined: 2026-02-08*
-*Last updated: 2026-02-10 after roadmap traceability mapping*
+*Requirements defined: 2026-02-10*
+*Last updated: 2026-02-10 after initial definition*
