@@ -434,6 +434,9 @@ impl App {
                 }
             }
 
+            // Check ambient loop (runs regardless of view -- ambient loops even when browsing)
+            self.check_ambient_loop();
+
             // Update visualizer FFT data before drawing (runs at render tick
             // rate ~10 Hz). No-op when visualizer is disabled or paused.
             self.update_visualizer();
@@ -633,6 +636,23 @@ impl App {
                             tracing::warn!("Seek backward failed: {}", e);
                         }
                     }
+                }
+            }
+            // TEMPORARY: Load selected track as ambient for Phase 6 testing.
+            // Phase 7 replaces this with the track browser ambient selection.
+            (KeyCode::Char('a'), _) => {
+                if matches!(self.view, AppView::Playing | AppView::Tracks) {
+                    self.start_ambient_from_selected()?;
+                }
+            }
+            // Toggle ambient mute (AUDIO-04)
+            (KeyCode::Char('m'), _) => {
+                if self.ambient_volume > 0.0 {
+                    self.mute_ambient();
+                    tracing::info!(channel = "ambient", "Ambient muted");
+                } else {
+                    self.unmute_ambient();
+                    tracing::info!(channel = "ambient", "Ambient unmuted");
                 }
             }
             // Toggle visualizer (POL-01, POL-02) -- v
@@ -1216,6 +1236,132 @@ impl App {
     fn unmute_ambient(&mut self) {
         self.ambient_volume = 0.7;
         self.apply_volume_budget();
+    }
+
+    // -----------------------------------------------------------------------
+    // Ambient loop and test trigger
+    // -----------------------------------------------------------------------
+
+    /// Check if the ambient track has finished and restart the loop.
+    ///
+    /// Polls player.is_ambient_finished() on every event loop tick (~100ms).
+    /// If the ambient track has ended and cached data exists, re-append from
+    /// cached bytes. Uses manual re-append (NOT repeat_infinite) to avoid the
+    /// confirmed memory leak in rodio #673.
+    ///
+    /// Per user decision: brief silence between loops is acceptable --
+    /// prioritize memory safety over gapless playback.
+    fn check_ambient_loop(&mut self) {
+        if let Some(player) = &mut self.player {
+            if player.is_ambient_finished() && player.has_ambient_data() {
+                // Compute budget-enforced ambient volume
+                let sum = self.saved_volume + self.ambient_volume;
+                let ambient_effective = if sum > 1.0 {
+                    (self.ambient_volume / sum) * self.master_volume
+                } else {
+                    self.ambient_volume * self.master_volume
+                };
+
+                match player.replay_ambient(ambient_effective) {
+                    Ok(()) => {
+                        // Loop restarted successfully -- no user-visible action needed
+                    }
+                    Err(e) => {
+                        // Failure isolation: log error, stop ambient, keep main playing
+                        tracing::error!(
+                            channel = "ambient",
+                            "Ambient loop restart failed: {}, stopping ambient", e
+                        );
+                        player.stop_ambient();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Load an ambient track with failure isolation.
+    ///
+    /// Per user decision: ambient decode/play failures log an error, clear
+    /// ambient state, and keep main music playing. Ambient failures never
+    /// crash the app or interrupt main playback.
+    fn load_ambient_track(&mut self, audio_bytes: Vec<u8>, track_name: String) {
+        // Compute budget-enforced ambient volume
+        let sum = self.saved_volume + self.ambient_volume;
+        let ambient_effective = if sum > 1.0 {
+            (self.ambient_volume / sum) * self.master_volume
+        } else {
+            self.ambient_volume * self.master_volume
+        };
+
+        if let Some(player) = &mut self.player {
+            match player.load_ambient(audio_bytes, track_name, ambient_effective) {
+                Ok(()) => {
+                    tracing::info!(channel = "ambient", "Ambient track loaded successfully");
+                    self.error_message = None;
+                }
+                Err(e) => {
+                    // Isolate failure: log, clear ambient state, keep main playing
+                    tracing::error!(channel = "ambient", "Failed to load ambient track: {}", e);
+                    player.stop_ambient();
+                    // Do NOT set error_message -- ambient errors are silent per phase scope
+                    // (UI error visibility deferred to Phase 8)
+                }
+            }
+        }
+    }
+
+    /// TEMPORARY: Start ambient playback using the currently selected track.
+    ///
+    /// Downloads the selected track and loads it as the ambient channel.
+    /// This is a synchronous blocking download (acceptable for testing,
+    /// Phase 7 will use async download for the real implementation).
+    ///
+    /// TODO(Phase 7): Remove this method when track browser is implemented.
+    fn start_ambient_from_selected(&mut self) -> Result<()> {
+        if let Some(idx) = self.track_state.selected() {
+            if let Some(track) = self.tracks.get(idx) {
+                let part_key = track
+                    .media
+                    .first()
+                    .and_then(|m| m.parts.first())
+                    .map(|p| p.key.as_str());
+
+                let part_key = match part_key {
+                    Some(key) => key,
+                    None => {
+                        tracing::warn!(
+                            track = %track.title,
+                            "Track has no media parts, cannot play as ambient"
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let stream_url = self.plex_client.stream_url(part_key);
+                let track_name = track.title.clone();
+
+                tracing::info!(
+                    channel = "ambient",
+                    track = %track_name,
+                    "Downloading track for ambient playback"
+                );
+
+                // Blocking download (acceptable for temp test mechanism)
+                match Player::download_track(&stream_url) {
+                    Ok(audio_bytes) => {
+                        self.load_ambient_track(audio_bytes, track_name);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            channel = "ambient",
+                            "Failed to download ambient track: {}", e
+                        );
+                        // Failure isolated -- main playback unaffected
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
