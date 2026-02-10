@@ -32,6 +32,19 @@ pub enum AppView {
 }
 
 // ---------------------------------------------------------------------------
+// NowPlaying metadata
+// ---------------------------------------------------------------------------
+
+/// Metadata for the currently playing track, stored for UI display.
+/// Updated atomically when a new track starts playing (in check_download_complete).
+pub struct NowPlaying {
+    pub track_name: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
 // App struct
 // ---------------------------------------------------------------------------
 
@@ -85,6 +98,18 @@ pub struct App {
     /// initialization fails or download errors occur. Cleared on next
     /// successful action.
     error_message: Option<String>,
+
+    /// Index of the currently playing track in `self.tracks`.
+    /// None before the first track is played.
+    current_track_index: Option<usize>,
+
+    /// Metadata of the currently playing track for UI display.
+    /// Updated when download completes and playback starts.
+    now_playing: Option<NowPlaying>,
+
+    /// Persisted volume level across track changes.
+    /// Each new rodio Sink starts at 1.0, so we save and restore this value.
+    saved_volume: f32,
 }
 
 impl App {
@@ -116,6 +141,9 @@ impl App {
             player: None,
             download_rx: None,
             error_message: None,
+            current_track_index: None,
+            now_playing: None,
+            saved_volume: 1.0,
         }
     }
 
@@ -163,6 +191,16 @@ impl App {
         self.error_message.as_deref()
     }
 
+    /// Get a reference to the NowPlaying metadata (if a track is playing).
+    pub fn now_playing(&self) -> Option<&NowPlaying> {
+        self.now_playing.as_ref()
+    }
+
+    /// Get the saved volume level (0.0 to 1.0).
+    pub fn saved_volume(&self) -> f32 {
+        self.saved_volume
+    }
+
     // -----------------------------------------------------------------------
     // Event loop
     // -----------------------------------------------------------------------
@@ -181,6 +219,16 @@ impl App {
 
             // Check for completed downloads (non-blocking)
             self.check_download_complete()?;
+
+            // Auto-advance to next track when current track finishes
+            if self.view == AppView::Playing && self.download_rx.is_none() {
+                if let Some(player) = &self.player {
+                    if player.is_finished() {
+                        tracing::info!("Track finished, auto-advancing to next");
+                        self.next_track()?;
+                    }
+                }
+            }
 
             // Draw the UI
             terminal.draw(|frame| {
@@ -235,12 +283,24 @@ impl App {
                         }
                     }
 
-                    // Start playback
+                    // Start playback with the saved volume level
                     if let Some(player) = &mut self.player {
-                        match player.load_and_play(audio_bytes, track_name) {
+                        match player.load_and_play(audio_bytes, track_name.clone(), self.saved_volume) {
                             Ok(()) => {
                                 self.view = AppView::Playing;
                                 self.error_message = None;
+
+                                // Populate NowPlaying metadata from the current track
+                                if let Some(idx) = self.current_track_index {
+                                    if let Some(track) = self.tracks.get(idx) {
+                                        self.now_playing = Some(NowPlaying {
+                                            track_name,
+                                            artist: track.artist.clone().unwrap_or_else(|| "Unknown Artist".to_string()),
+                                            album: track.album.clone().unwrap_or_else(|| "Unknown Album".to_string()),
+                                            duration_ms: track.duration.unwrap_or(0),
+                                        });
+                                    }
+                                }
                             }
                             Err(e) => {
                                 tracing::error!("Failed to start playback: {}", e);
@@ -284,6 +344,26 @@ impl App {
             (KeyCode::Char(' '), _) => {
                 if let Some(player) = &self.player {
                     player.toggle_pause();
+                }
+            }
+            // Volume up (PLAY-06) -- + or =
+            (KeyCode::Char('+'), _) | (KeyCode::Char('='), _) => {
+                self.volume_up();
+            }
+            // Volume down (PLAY-07) -- - or _
+            (KeyCode::Char('-'), _) | (KeyCode::Char('_'), _) => {
+                self.volume_down();
+            }
+            // Next track (PLAY-04) -- n or >
+            (KeyCode::Char('n'), _) | (KeyCode::Char('>'), _) => {
+                if matches!(self.view, AppView::Playing | AppView::Tracks) {
+                    self.next_track()?;
+                }
+            }
+            // Previous track (PLAY-05) -- N or <
+            (KeyCode::Char('N'), _) | (KeyCode::Char('<'), _) => {
+                if matches!(self.view, AppView::Playing | AppView::Tracks) {
+                    self.prev_track()?;
                 }
             }
             // Navigate down
@@ -362,6 +442,9 @@ impl App {
                 }
             }
             AppView::Tracks | AppView::Playing => {
+                // Sync current_track_index with list selection so next/prev
+                // work correctly after manual track selection (Pitfall 5).
+                self.current_track_index = self.track_state.selected();
                 self.start_track_download()?;
             }
             AppView::Downloading => {
@@ -425,14 +508,85 @@ impl App {
     }
 
     /// Go back from Tracks/Playing view to Playlists view.
+    ///
+    /// Also clears playback state (current track index, now playing metadata)
+    /// since we are leaving the playlist context.
     fn go_back(&mut self) {
         match self.view {
             AppView::Tracks | AppView::Playing => {
                 self.view = AppView::Playlists;
                 self.tracks.clear();
                 self.current_playlist_title.clear();
+                self.current_track_index = None;
+                self.now_playing = None;
             }
             _ => {}
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Track navigation
+    // -----------------------------------------------------------------------
+
+    /// Play the track at the given index in the tracks list.
+    ///
+    /// This is the shared core method used by next_track, prev_track, and
+    /// select_item. It cancels any in-progress download, updates the index
+    /// and list selection, then triggers a new download.
+    fn play_track_at_index(&mut self, index: usize) -> Result<()> {
+        if index >= self.tracks.len() {
+            return Ok(());
+        }
+        // Cancel any in-progress download by dropping the old receiver
+        self.download_rx = None;
+        // Update index and sync list selection
+        self.current_track_index = Some(index);
+        self.track_state.select(Some(index));
+        // Use existing download mechanism
+        self.start_track_download()
+    }
+
+    /// Skip to the next track in the playlist (wraps to beginning).
+    fn next_track(&mut self) -> Result<()> {
+        if self.tracks.is_empty() {
+            return Ok(());
+        }
+        let next = match self.current_track_index {
+            Some(idx) if idx + 1 < self.tracks.len() => idx + 1,
+            _ => 0, // Wrap to beginning
+        };
+        self.play_track_at_index(next)
+    }
+
+    /// Skip to the previous track in the playlist (wraps to end).
+    fn prev_track(&mut self) -> Result<()> {
+        if self.tracks.is_empty() {
+            return Ok(());
+        }
+        let prev = match self.current_track_index {
+            Some(0) | None => self.tracks.len().saturating_sub(1),
+            Some(idx) => idx - 1,
+        };
+        self.play_track_at_index(prev)
+    }
+
+    // -----------------------------------------------------------------------
+    // Volume control (with save)
+    // -----------------------------------------------------------------------
+
+    /// Increase volume and save the new level for persistence across tracks.
+    fn volume_up(&mut self) {
+        if let Some(player) = &self.player {
+            player.volume_up();
+            self.saved_volume = player.volume();
+        }
+    }
+
+    /// Decrease volume and save the new level for persistence across tracks.
+    fn volume_down(&mut self) {
+        if let Some(player) = &self.player {
+            player.volume_down();
+            self.saved_volume = player.volume();
         }
     }
 }
