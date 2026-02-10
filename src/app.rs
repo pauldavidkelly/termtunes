@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use color_eyre::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 use ratatui::DefaultTerminal;
@@ -65,8 +65,18 @@ impl App {
             if event::poll(Duration::from_millis(100))? {
                 if let Event::Key(key) = event::read()? {
                     // Only handle key press events (not release/repeat)
-                    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
-                        self.running = false;
+                    if key.kind == KeyEventKind::Press {
+                        match (key.code, key.modifiers) {
+                            // 'q' to quit
+                            (KeyCode::Char('q'), _) => self.running = false,
+                            // Ctrl+C to quit -- in raw mode the terminal driver
+                            // does NOT send SIGINT, so we must handle it here
+                            // as a key event instead.
+                            (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                self.running = false;
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
