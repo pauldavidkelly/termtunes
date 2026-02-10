@@ -5,34 +5,34 @@
 See: .planning/PROJECT.md (updated 2026-02-08)
 
 **Core value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
-**Current focus:** Phase 2 - Core TUI and Playback
+**Current focus:** Phase 2 complete, ready for Phase 3
 
 ## Current Position
 
-Phase: 2 of 5 (Core TUI and Playback)
-Plan: 1 of 2 in current phase
-Status: Plan 02-01 complete, ready for Plan 02-02
-Last activity: 2026-02-10 -- Completed 02-01 (Playback Controls and App State)
+Phase: 2 of 5 (Core TUI and Playback) -- COMPLETE
+Plan: 2 of 2 in current phase
+Status: Phase 2 complete, ready for Phase 3 planning
+Last activity: 2026-02-10 -- Completed 02-02 (Player Bar UI)
 
-Progress: [█████████████░░░░░░░] 50% (Phase 2)
+Progress: [████████████████████] 100% (Phase 2)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4
-- Average duration: ~15 min
-- Total execution time: ~1.02 hours
+- Total plans completed: 5
+- Average duration: ~14 min
+- Total execution time: ~1.21 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-foundation-audio-poc | 3/3 | ~58 min | ~19 min |
-| 02-core-tui-playback | 1/2 | ~3 min | ~3 min |
+| 02-core-tui-playback | 2/2 | ~14 min | ~7 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (~15 min), 01-02 (~5 min), 01-03 (~38 min), 02-01 (~3 min)
-- Trend: 02-01 fast due to well-researched plan with no new dependencies
+- Last 5 plans: 01-02 (~5 min), 01-03 (~38 min), 02-01 (~3 min), 02-02 (~11 min)
+- Trend: Phase 2 plans faster due to well-researched plans with no new dependencies
 
 *Updated after each plan completion*
 
@@ -66,6 +66,10 @@ Recent decisions affecting current work:
 - [02-01]: Track navigation wraps around (last->first, first->last)
 - [02-01]: saved_volume stored in App struct, restored on each new Sink creation
 - [02-01]: NowPlaying metadata populated from Plex Track data in check_download_complete
+- [02-02]: State icons >> (green, playing), || (yellow, paused), -- (gray, stopped) for instant visual feedback
+- [02-02]: LineGauge ratio clamped to 0.0..=1.0 to prevent panic when get_pos() exceeds duration
+- [02-02]: Error messages shown in player bar line 3 (red) instead of replacing entire bar
+- [02-02]: current_track_index() accessor added to app.rs for UI track highlighting
 
 ### Pending Todos
 
@@ -78,5 +82,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-10
-Stopped at: Completed 02-01-PLAN.md (Playback Controls and App State)
-Resume file: .planning/phases/02-core-tui-playback/02-01-SUMMARY.md
+Stopped at: Completed 02-02-PLAN.md (Player Bar UI) -- Phase 2 complete
+Resume file: .planning/phases/02-core-tui-playback/02-02-SUMMARY.md
