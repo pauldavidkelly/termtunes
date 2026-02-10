@@ -30,12 +30,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Application detects an expired or invalid Plex token on startup and prompts re-authentication instead of silently failing
   4. Application restores terminal to a clean state after quit (q key), crash, or signal termination -- no corrupted terminal
   5. Application compiles and runs on both WSL2 and native Linux
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: TBD
-- [ ] 01-02: TBD
-- [ ] 01-03: TBD
+- [ ] 01-01-PLAN.md -- Scaffold Rust project, terminal lifecycle (panic hooks, signal handlers), config persistence
+- [ ] 01-02-PLAN.md -- Plex PIN-based OAuth authentication, server discovery, playlist/track API client
+- [ ] 01-03-PLAN.md -- Audio playback via rodio, play/pause controls, status bar, terminal restoration test script
 
 ### Phase 2: Core TUI and Playback
 **Goal**: User can browse playlists, select one, and control playback with full vim-style keyboard controls through a functional terminal UI
