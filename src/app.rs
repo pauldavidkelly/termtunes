@@ -221,6 +221,14 @@ pub struct App {
 
     /// Dynamic number of bars based on available terminal width (set by UI).
     visualizer_num_bars: usize,
+
+    /// Raw ambient volume setting (0.0 to 1.0), independent of main volume.
+    /// Default: 0.7 (30% lower than default main volume of 1.0, per user decision).
+    ambient_volume: f32,
+
+    /// Master volume multiplier applied AFTER budget enforcement.
+    /// Scales the combined output. Default: 1.0 (no scaling).
+    master_volume: f32,
 }
 
 impl App {
@@ -265,6 +273,8 @@ impl App {
             visualizer_data: visualizer::create_visualizer_data(visualizer::FFT_SIZE),
             visualizer_state: VisualizerState::new(visualizer::NUM_BARS),
             visualizer_num_bars: visualizer::NUM_BARS,
+            ambient_volume: 0.7,
+            master_volume: 1.0,
         }
     }
 
@@ -378,6 +388,16 @@ impl App {
     /// Set the dynamic number of visualizer bars (called by UI based on width).
     pub fn set_visualizer_num_bars(&mut self, n: usize) {
         self.visualizer_num_bars = n.clamp(4, 64);
+    }
+
+    /// Get the ambient volume level (0.0 to 1.0).
+    pub fn ambient_volume(&self) -> f32 {
+        self.ambient_volume
+    }
+
+    /// Get the master volume multiplier (0.0 to 1.0).
+    pub fn master_volume(&self) -> f32 {
+        self.master_volume
     }
 
     // -----------------------------------------------------------------------
@@ -510,6 +530,10 @@ impl App {
                             }
                         }
                     }
+
+                    // Apply volume budget to ensure the new main_sink gets
+                    // the budget-enforced volume (corrects for ambient if active).
+                    self.apply_volume_budget();
 
                     self.download_rx = None;
                 }
@@ -977,6 +1001,8 @@ impl App {
                         }
                     }
                 }
+                // Apply volume budget to the fresh main_sink
+                self.apply_volume_budget();
                 Ok(true)
             }
             RepeatMode::All => {
@@ -1136,23 +1162,60 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
-    // Volume control (with save)
+    // Volume control (with budget enforcement)
     // -----------------------------------------------------------------------
 
-    /// Increase volume and save the new level for persistence across tracks.
+    /// Increase main volume and apply budget enforcement.
+    ///
+    /// Volume is managed by App (not Player) to enable budget enforcement.
+    /// The saved_volume field is the authoritative source for main channel
+    /// raw volume. Player sinks receive computed values after budget + master.
     fn volume_up(&mut self) {
+        self.saved_volume = (self.saved_volume + 0.05).min(1.0);
+        self.apply_volume_budget();
+    }
+
+    /// Decrease main volume and apply budget enforcement.
+    fn volume_down(&mut self) {
+        self.saved_volume = (self.saved_volume - 0.05).max(0.0);
+        self.apply_volume_budget();
+    }
+
+    /// Enforce volume budget: main + ambient <= 1.0, then scale by master.
+    ///
+    /// Per user decision: when volumes exceed budget, auto-scale both
+    /// proportionally to fit. Master volume applies AFTER budget enforcement.
+    fn apply_volume_budget(&mut self) {
+        let sum = self.saved_volume + self.ambient_volume;
+        let (main_budgeted, ambient_budgeted) = if sum > 1.0 {
+            let scale = 1.0 / sum;
+            (self.saved_volume * scale, self.ambient_volume * scale)
+        } else {
+            (self.saved_volume, self.ambient_volume)
+        };
+
+        // Apply master volume after budget enforcement
+        let main_final = main_budgeted * self.master_volume;
+        let ambient_final = ambient_budgeted * self.master_volume;
+
         if let Some(player) = &self.player {
-            player.volume_up();
-            self.saved_volume = player.volume();
+            player.set_main_volume(main_final);
+            player.set_ambient_volume(ambient_final);
         }
     }
 
-    /// Decrease volume and save the new level for persistence across tracks.
-    fn volume_down(&mut self) {
-        if let Some(player) = &self.player {
-            player.volume_down();
-            self.saved_volume = player.volume();
-        }
+    /// Mute ambient channel by setting its volume to 0.
+    /// Per user decision: muting is simply volume=0, no separate state.
+    fn mute_ambient(&mut self) {
+        self.ambient_volume = 0.0;
+        self.apply_volume_budget();
+    }
+
+    /// Unmute ambient channel by restoring default volume (0.7).
+    /// Since muting is just volume=0, unmuting restores a reasonable default.
+    fn unmute_ambient(&mut self) {
+        self.ambient_volume = 0.7;
+        self.apply_volume_budget();
     }
 
     // -----------------------------------------------------------------------
