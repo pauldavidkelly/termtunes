@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-08)
 
 **Core value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
-**Current focus:** Phase 4 COMPLETE -- Tmux Integration and Polish
+**Current focus:** Phase 5 COMPLETE -- Audio Visualizer (FINAL PHASE)
 
 ## Current Position
 
-Phase: 4 of 5 (Tmux Integration & Polish) -- COMPLETE
-Plan: 2 of 2 in current phase (04-02 complete)
-Status: Phase 4 complete -- adaptive layout, tmux now-playing, session persistence all shipped
-Last activity: 2026-02-10 -- Completed 04-02 (Tmux Integration & Session Persistence)
+Phase: 5 of 5 (Audio Visualizer) -- COMPLETE
+Plan: 1 of 1 in current phase (05-01 complete)
+Status: ALL PHASES COMPLETE -- v1.0 feature set shipped
+Last activity: 2026-02-10 -- Completed 05-01 (Audio Visualizer)
 
-Progress: [████████████████████] 100% (Phase 4)
+Progress: [████████████████████] 100% (All Phases)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 9
-- Average duration: ~10 min
-- Total execution time: ~1.47 hours
+- Total plans completed: 10
+- Average duration: ~9 min
+- Total execution time: ~1.55 hours
 
 **By Phase:**
 
@@ -31,9 +31,10 @@ Progress: [████████████████████] 100% (P
 | 02-core-tui-playback | 2/2 | ~14 min | ~7 min |
 | 03-differentiators | 2/2 | ~11 min | ~5.5 min |
 | 04-tmux-integration-polish | 2/2 | ~4 min | ~2 min |
+| 05-audio-visualizer | 1/1 | ~5 min | ~5 min |
 
 **Recent Trend:**
-- Last 5 plans: 03-01 (~3 min), 03-02 (~8 min), 04-01 (~2 min), 04-02 (~2 min)
+- Last 5 plans: 03-02 (~8 min), 04-01 (~2 min), 04-02 (~2 min), 05-01 (~5 min)
 - Trend: Plans consistently fast as codebase is well-understood and plans are precise
 
 *Updated after each plan completion*
@@ -90,6 +91,11 @@ Recent decisions affecting current work:
 - [04-02]: Session restore does NOT auto-play -- positions user at saved track in Tracks view
 - [04-02]: go_back() preserves session-relevant fields so save works from any view
 - [04-02]: RepeatMode string conversion via to_string_repr/from_string_repr for TOML serialization
+- [05-01]: spectrum-analyzer crate for FFT (wraps microfft with windowing and scaling)
+- [05-01]: try_lock() in audio thread to never block playback (skip sample on lock failure)
+- [05-01]: FFT computed on UI thread at render tick rate (~10Hz), not on audio thread
+- [05-01]: Auto-hide visualizer in narrow (<40 cols) and short (<20 rows) terminals
+- [05-01]: 32 default bars with dynamic width-based adjustment (4..64 range)
 
 ### Pending Todos
 
@@ -102,5 +108,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-10
-Stopped at: Completed 04-02-PLAN.md (Tmux Integration & Session Persistence) -- Phase 4 complete
-Resume file: .planning/phases/04-tmux-integration-polish/04-02-SUMMARY.md
+Stopped at: Completed 05-01-PLAN.md (Audio Visualizer) -- ALL PHASES COMPLETE
+Resume file: .planning/phases/05-audio-visualizer/05-01-SUMMARY.md
