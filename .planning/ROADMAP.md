@@ -74,11 +74,11 @@ Plans:
   1. Application adapts its layout cleanly in terminal panes as narrow as 30-40 columns, and handles terminal resize without visual corruption
   2. Tmux status bar displays the currently playing track name (read from a file written by the application)
   3. User can close the application and reopen it later to resume the same playlist at the same position
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 04-01: TBD
-- [ ] 04-02: TBD
+- [ ] 04-01-PLAN.md -- Responsive layout for narrow tmux panes (20-39 cols), minimum-size guard, resize event handling
+- [ ] 04-02-PLAN.md -- Tmux now-playing file, session persistence (save on exit, restore on startup), human verification
 
 ### Phase 5: Audio Visualizer
 **Goal**: User can toggle an aesthetic spectrum visualizer that runs alongside playback without degrading audio quality or UI responsiveness
