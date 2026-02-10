@@ -87,10 +87,10 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. User can press v to toggle a visual spectrum/equalizer animation that responds to the playing audio
   2. Visualizer does not cause audio dropouts, UI lag, or noticeable CPU overhead during normal playback
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 05-01: TBD
+- [ ] 05-01-PLAN.md -- Visualizer engine (VisualizerSource tap, FFT via spectrum-analyzer, BarChart rendering) + app/UI integration (v toggle, conditional layout, smooth bar animation)
 
 ## Progress
 
