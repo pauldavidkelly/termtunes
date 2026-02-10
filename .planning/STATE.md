@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-08)
 
 **Core value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
-**Current focus:** Phase 3 -- Differentiators (shuffle, repeat, seek, UI indicators)
+**Current focus:** Phase 3 complete -- ready for Phase 4 (Polish and UX)
 
 ## Current Position
 
-Phase: 3 of 5 (Differentiators)
-Plan: 1 of 2 in current phase
-Status: 03-01 complete (playback state mechanics), ready for 03-02
-Last activity: 2026-02-10 -- Completed 03-01 (Shuffle, Repeat, Seek)
+Phase: 3 of 5 (Differentiators) -- COMPLETE
+Plan: 2 of 2 in current phase (all done)
+Status: Phase 3 complete -- all differentiators shipped and verified
+Last activity: 2026-02-10 -- Completed 03-02 (Favorites, UI Indicators)
 
-Progress: [██████████░░░░░░░░░░] 50% (Phase 3)
+Progress: [████████████████████] 100% (Phase 3)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6
-- Average duration: ~12 min
-- Total execution time: ~1.26 hours
+- Total plans completed: 7
+- Average duration: ~11 min
+- Total execution time: ~1.40 hours
 
 **By Phase:**
 
@@ -29,11 +29,11 @@ Progress: [██████████░░░░░░░░░░] 50% (Ph
 |-------|-------|-------|----------|
 | 01-foundation-audio-poc | 3/3 | ~58 min | ~19 min |
 | 02-core-tui-playback | 2/2 | ~14 min | ~7 min |
-| 03-differentiators | 1/2 | ~3 min | ~3 min |
+| 03-differentiators | 2/2 | ~11 min | ~5.5 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-03 (~38 min), 02-01 (~3 min), 02-02 (~11 min), 03-01 (~3 min)
-- Trend: Plans getting faster as codebase is well-understood and plans are precise
+- Last 5 plans: 02-01 (~3 min), 02-02 (~11 min), 03-01 (~3 min), 03-02 (~8 min)
+- Trend: Plans consistently fast as codebase is well-understood and plans are precise
 
 *Updated after each plan completion*
 
@@ -76,6 +76,10 @@ Recent decisions affecting current work:
 - [03-01]: Seek keybindings (h/l/Left/Right) only active in Playing view
 - [03-01]: User skip (n/N) ignores RepeatMode::One -- only auto-advance replays
 - [03-01]: prev_track always wraps regardless of repeat mode
+- [03-02]: Favorites keyed by string '1'-'9' in config HashMap for TOML serialization
+- [03-02]: Two-key modal: press f enters awaiting_favorite_key state, then 1-9 assigns
+- [03-02]: Favorite activation (1-9) works from any view, assignment (f) only from Playlists view
+- [03-02]: Shuffle indicator in magenta, repeat indicator in blue for visual distinction
 
 ### Pending Todos
 
@@ -88,5 +92,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-10
-Stopped at: Completed 03-01-PLAN.md (Shuffle, Repeat, Seek)
-Resume file: .planning/phases/03-differentiators/03-01-SUMMARY.md
+Stopped at: Completed 03-02-PLAN.md (Favorites, UI Indicators) -- Phase 3 fully complete
+Resume file: .planning/phases/03-differentiators/03-02-SUMMARY.md
