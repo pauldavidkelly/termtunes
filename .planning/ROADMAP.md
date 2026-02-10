@@ -60,11 +60,11 @@ Plans:
   1. User can assign up to 9 playlists as favorites and start any favorite by pressing its number key (1-9) from anywhere in the app
   2. User can toggle shuffle mode and cycle through repeat modes (off/all/one), with indicators visible in the player bar
   3. User can seek forward and backward within the current track using h/l keys
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 03-01: TBD
-- [ ] 03-02: TBD
+- [ ] 03-01-PLAN.md -- Shuffle mode, repeat modes (Off/All/One), seek (h/l), rand dependency, advance_track logic
+- [ ] 03-02-PLAN.md -- Favorite playlist hotkeys (f + 1-9), config persistence, shuffle/repeat UI indicators, human verification
 
 ### Phase 4: Tmux Integration and Polish
 **Goal**: Application works seamlessly in narrow tmux panes, persists sessions across restarts, and writes now-playing info for tmux status bar display
