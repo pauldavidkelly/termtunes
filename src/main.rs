@@ -5,6 +5,7 @@ mod player;
 mod plex;
 mod tui;
 mod ui;
+mod visualizer;
 
 use color_eyre::Result;
 use tracing_subscriber::EnvFilter;

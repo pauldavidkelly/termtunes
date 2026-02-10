@@ -426,7 +426,7 @@ impl App {
 
                     // Start playback with the saved volume level
                     if let Some(player) = &mut self.player {
-                        match player.load_and_play(audio_bytes, track_name.clone(), self.saved_volume) {
+                        match player.load_and_play(audio_bytes, track_name.clone(), self.saved_volume, None) {
                             Ok(()) => {
                                 self.view = AppView::Playing;
                                 self.error_message = None;
@@ -908,7 +908,7 @@ impl App {
             RepeatMode::One => {
                 // Replay current track from cached bytes (no re-download)
                 if let Some(player) = &mut self.player {
-                    if let Err(e) = player.replay_current(self.saved_volume) {
+                    if let Err(e) = player.replay_current(self.saved_volume, None) {
                         tracing::warn!("Repeat One replay failed: {}, falling back to download", e);
                         // Fallback: re-download if cached replay fails
                         if let Some(idx) = self.current_track_index {

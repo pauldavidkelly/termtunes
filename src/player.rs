@@ -1,9 +1,12 @@
 use std::io::Cursor;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use color_eyre::Result;
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink};
+
+use crate::visualizer::{VisualizerData, VisualizerSource, FFT_SIZE};
 
 /// Seek step size for forward/backward seeking within a track.
 const SEEK_STEP: Duration = Duration::from_secs(5);
@@ -127,7 +130,13 @@ impl Player {
     ///
     /// The `volume` parameter restores the user's saved volume level on the
     /// fresh Sink (each new Sink starts at 1.0, so we must explicitly set it).
-    pub fn load_and_play(&mut self, audio_bytes: Vec<u8>, track_name: String, volume: f32) -> Result<()> {
+    pub fn load_and_play(
+        &mut self,
+        audio_bytes: Vec<u8>,
+        track_name: String,
+        volume: f32,
+        visualizer_data: Option<Arc<Mutex<VisualizerData>>>,
+    ) -> Result<()> {
         // Stop current playback
         self.sink.stop();
 
@@ -151,7 +160,16 @@ impl Player {
             .with_seekable(true)
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("Failed to decode audio: {}", e))?;
-        self.sink.append(source);
+
+        // Wrap with visualizer tap if data is provided. The VisualizerSource
+        // copies samples to the shared buffer as they flow through, enabling
+        // real-time FFT visualization without affecting audio quality.
+        if let Some(data) = visualizer_data {
+            let viz_source = VisualizerSource::new(source, data, FFT_SIZE);
+            self.sink.append(viz_source);
+        } else {
+            self.sink.append(source);
+        }
 
         // Store for potential re-creation and status display
         self._audio_data = Some(audio_bytes);
@@ -259,7 +277,11 @@ impl Player {
     ///
     /// Avoids re-downloading the track by re-decoding from the in-memory
     /// audio data. Creates a fresh Sink to avoid blocking issues after stop().
-    pub fn replay_current(&mut self, volume: f32) -> Result<()> {
+    pub fn replay_current(
+        &mut self,
+        volume: f32,
+        visualizer_data: Option<Arc<Mutex<VisualizerData>>>,
+    ) -> Result<()> {
         let audio_bytes = self
             ._audio_data
             .clone()
@@ -279,7 +301,14 @@ impl Player {
             .with_seekable(true)
             .build()
             .map_err(|e| color_eyre::eyre::eyre!("Failed to decode audio for replay: {}", e))?;
-        self.sink.append(source);
+
+        // Wrap with visualizer tap if data is provided
+        if let Some(data) = visualizer_data {
+            let viz_source = VisualizerSource::new(source, data, FFT_SIZE);
+            self.sink.append(viz_source);
+        } else {
+            self.sink.append(source);
+        }
 
         tracing::info!("Replaying track (Repeat One)");
         Ok(())
