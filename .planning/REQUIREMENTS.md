@@ -80,13 +80,39 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| *(To be filled by roadmapper)* | | |
+| AUDIO-01 | Phase 6 | Pending |
+| AUDIO-02 | Phase 6 | Pending |
+| AUDIO-03 | Phase 6 | Pending |
+| AUDIO-04 | Phase 6 | Pending |
+| AUDIO-05 | Phase 6 | Pending |
+| AUDIO-06 | Phase 6 | Pending |
+| AUDIO-07 | Phase 6 | Pending |
+| TRACK-01 | Phase 7 | Pending |
+| TRACK-02 | Phase 7 | Pending |
+| TRACK-03 | Phase 7 | Pending |
+| TRACK-04 | Phase 7 | Pending |
+| TRACK-05 | Phase 7 | Pending |
+| TRACK-06 | Phase 7 | Pending |
+| UI-01 | Phase 8 | Pending |
+| UI-02 | Phase 7 | Pending |
+| UI-03 | Phase 7 | Pending |
+| UI-04 | Phase 7 | Pending |
+| UI-05 | Phase 8 | Pending |
+| UI-06 | Phase 8 | Pending |
+| UI-07 | Phase 8 | Pending |
+| UI-08 | Phase 7 | Pending |
+| UI-09 | Phase 7 | Pending |
+| PERSIST-01 | Phase 9 | Pending |
+| PERSIST-02 | Phase 9 | Pending |
+| PERSIST-03 | Phase 9 | Pending |
+| PERSIST-04 | Phase 9 | Pending |
+| PERSIST-05 | Phase 9 | Pending |
 
 **Coverage:**
-- v1.1 requirements: 25 total
-- Mapped to phases: 0
-- Unmapped: 25 ⚠️
+- v1.1 requirements: 27 total
+- Mapped to phases: 27
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-10*
-*Last updated: 2026-02-10 after initial definition*
+*Last updated: 2026-02-10 after roadmap traceability mapping*

@@ -5,14 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-10)
 
 **Core value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
-**Current focus:** v1.1 Multi-Channel Audio
+**Current focus:** Phase 6 - Dual-Sink Audio Engine
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-02-10 — Milestone v1.1 started
+Phase: 6 of 9 (Dual-Sink Audio Engine)
+Plan: 0 of 2 in current phase
+Status: Ready to plan
+Last activity: 2026-02-10 — v1.1 roadmap created (4 phases, 27 requirements mapped)
+
+Progress: [##########..............] 10/17 plans (v1.0: 10/10, v1.1: 0/7)
 
 ## Performance Metrics
 
@@ -41,9 +43,13 @@ Last activity: 2026-02-10 — Milestone v1.1 started
 
 ### Decisions
 
-All v1.0 decisions are logged in PROJECT.md Key Decisions table with outcomes.
+All v1.0 decisions logged in PROJECT.md Key Decisions table.
+v1.1 decisions pending -- Phase 6 will validate dual-sink architecture on WSL2.
 
-Fresh decision log for v1.1+ — see PROJECT.md for v1.0 decisions.
+Key research findings informing v1.1:
+- rodio `repeat_infinite()` has confirmed memory leak -- use manual re-append loop
+- Volume budget (main + ambient <= 1.0) required to prevent mixer clipping
+- Single OutputStream shared by both sinks (never create second OutputStream)
 
 ### Pending Todos
 
@@ -51,10 +57,10 @@ None yet.
 
 ### Blockers/Concerns
 
-None — v1.0 complete and fully validated.
+- WSL2 dual-sink audio quality is unvalidated -- Phase 6 is the fail-fast gate
 
 ## Session Continuity
 
 Last session: 2026-02-10
-Stopped at: v1.0 milestone archived
-Next: `/gsd:new-milestone` to plan v1.1 or v2.0
+Stopped at: v1.1 roadmap created
+Next: `/gsd:plan-phase 6`
