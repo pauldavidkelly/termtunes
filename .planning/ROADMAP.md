@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 1: Foundation and Audio Proof-of-Concept** - Validate WSL2 audio, Plex authentication, and terminal lifecycle before investing in UI
 - [ ] **Phase 2: Core TUI and Playback** - Build the playlist browser, player bar, and full playback controls with vim keybindings
 - [x] **Phase 3: Differentiators** - Add favorite playlist hotkeys, shuffle, repeat, and seek -- the features that make TermTunes unique
-- [ ] **Phase 4: Tmux Integration and Polish** - Optimize for narrow tmux panes, add status bar integration and session persistence
+- [x] **Phase 4: Tmux Integration and Polish** - Optimize for narrow tmux panes, add status bar integration and session persistence
 - [ ] **Phase 5: Audio Visualizer** - Add toggleable spectrum visualizer as the final aesthetic layer
 
 ## Phase Details
@@ -77,8 +77,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md -- Responsive layout for narrow tmux panes (20-39 cols), minimum-size guard, resize event handling
-- [ ] 04-02-PLAN.md -- Tmux now-playing file, session persistence (save on exit, restore on startup), human verification
+- [x] 04-01-PLAN.md -- Responsive layout for narrow tmux panes (20-39 cols), minimum-size guard, resize event handling
+- [x] 04-02-PLAN.md -- Tmux now-playing file, session persistence (save on exit, restore on startup), human verification
 
 ### Phase 5: Audio Visualizer
 **Goal**: User can toggle an aesthetic spectrum visualizer that runs alongside playback without degrading audio quality or UI responsiveness
@@ -102,7 +102,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 1. Foundation and Audio PoC | 3/3 | Complete | 2026-02-10 |
 | 2. Core TUI and Playback | 2/2 | Complete | 2026-02-10 |
 | 3. Differentiators | 2/2 | Complete | 2026-02-10 |
-| 4. Tmux Integration and Polish | 0/2 | Not started | - |
+| 4. Tmux Integration and Polish | 2/2 | Complete | 2026-02-10 |
 | 5. Audio Visualizer | 0/1 | Not started | - |
 
 ---
