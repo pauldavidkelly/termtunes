@@ -164,7 +164,8 @@ pub fn compute_spectrum_bars(
     let (samples, sample_rate) = {
         let mut guard = data.lock().ok()?;
         if !guard.has_new_data {
-            return None; // No new samples -- skip FFT to save CPU
+            // No new samples (paused/stopped) -- return zeros to allow decay
+            return Some(vec![0.0; num_bars]);
         }
         let samples = guard.samples.clone();
         let sample_rate = guard.sample_rate;
