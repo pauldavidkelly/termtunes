@@ -10,28 +10,28 @@ See: .planning/PROJECT.md (updated 2026-02-08)
 ## Current Position
 
 Phase: 1 of 5 (Foundation and Audio Proof-of-Concept)
-Plan: 1 of 3 in current phase
+Plan: 2 of 3 in current phase
 Status: Executing phase
-Last activity: 2026-02-10 -- Completed 01-01 (Project Scaffold)
+Last activity: 2026-02-10 -- Completed 01-02 (Plex Auth and API Client)
 
-Progress: [███░░░░░░░] 33%
+Progress: [██████░░░░] 67%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
-- Average duration: ~15 min
-- Total execution time: ~0.25 hours
+- Total plans completed: 2
+- Average duration: ~10 min
+- Total execution time: ~0.33 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-foundation-audio-poc | 1/3 | ~15 min | ~15 min |
+| 01-foundation-audio-poc | 2/3 | ~20 min | ~10 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (~15 min)
-- Trend: baseline
+- Last 5 plans: 01-01 (~15 min), 01-02 (~5 min)
+- Trend: accelerating
 
 *Updated after each plan completion*
 
@@ -49,6 +49,11 @@ Recent decisions affecting current work:
 - [01-01]: color_eyre::Result used throughout for consistent error handling
 - [01-01]: Tracing output to ~/.local/share/termtunes/termtunes.log (keeps TUI clean)
 - [01-01]: Config file permissions 0o600 (will store auth tokens later)
+- [01-02]: Auth flow runs before TUI init on normal terminal (not alternate screen) so URL is readable
+- [01-02]: tokio::main for async runtime, event loop still uses synchronous crossterm polling
+- [01-02]: Server configs keyed by machine identifier (clientIdentifier) in config HashMap
+- [01-02]: AppView enum state machine for Playlists/Tracks navigation views
+- [01-02]: reqwest "query" feature required for URL query parameters (.query() is feature-gated)
 
 ### Pending Todos
 
@@ -61,5 +66,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-10
-Stopped at: Completed 01-01-PLAN.md (Project Scaffold), ready for 01-02
-Resume file: .planning/phases/01-foundation-audio-poc/01-01-SUMMARY.md
+Stopped at: Completed 01-02-PLAN.md (Plex Auth and API Client), ready for 01-03
+Resume file: .planning/phases/01-foundation-audio-poc/01-02-SUMMARY.md
