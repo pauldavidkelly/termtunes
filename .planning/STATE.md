@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-10)
 ## Current Position
 
 Phase: 6 of 9 (Dual-Sink Audio Engine)
-Plan: 0 of 2 in current phase
-Status: Ready to plan
-Last activity: 2026-02-10 — v1.1 roadmap created (4 phases, 27 requirements mapped)
+Plan: 1 of 2 in current phase
+Status: Executing
+Last activity: 2026-02-10 — Completed 06-01 (dual-sink refactor + volume budget)
 
-Progress: [##########..............] 10/17 plans (v1.0: 10/10, v1.1: 0/7)
+Progress: [###########.............] 11/17 plans (v1.0: 10/10, v1.1: 1/7)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 10
+- Total plans completed: 11
 - Average duration: ~9 min
-- Total execution time: ~1.55 hours
+- Total execution time: ~1.63 hours
 
 **By Phase:**
 
@@ -32,9 +32,10 @@ Progress: [##########..............] 10/17 plans (v1.0: 10/10, v1.1: 0/7)
 | 03-differentiators | 2/2 | ~11 min | ~5.5 min |
 | 04-tmux-integration-polish | 2/2 | ~4 min | ~2 min |
 | 05-audio-visualizer | 1/1 | ~5 min | ~5 min |
+| 06-dual-sink-audio-engine | 1/2 | ~5 min | ~5 min |
 
 **Recent Trend:**
-- Last 5 plans: 03-02 (~8 min), 04-01 (~2 min), 04-02 (~2 min), 05-01 (~5 min)
+- Last 5 plans: 04-01 (~2 min), 04-02 (~2 min), 05-01 (~5 min), 06-01 (~5 min)
 - Trend: Plans consistently fast as codebase is well-understood and plans are precise
 
 *Updated after each plan completion*
@@ -44,9 +45,11 @@ Progress: [##########..............] 10/17 plans (v1.0: 10/10, v1.1: 0/7)
 ### Decisions
 
 All v1.0 decisions logged in PROJECT.md Key Decisions table.
-v1.1 decisions pending -- Phase 6 will validate dual-sink architecture on WSL2.
 
-Key research findings informing v1.1:
+Key v1.1 decisions:
+- Regular Sink (not SpatialSink) for dual-channel -- SpatialSink is for 3D positional audio
+- Volume management moved from Player to App for budget enforcement
+- Default ambient_volume: 0.7, master_volume: 1.0
 - rodio `repeat_infinite()` has confirmed memory leak -- use manual re-append loop
 - Volume budget (main + ambient <= 1.0) required to prevent mixer clipping
 - Single OutputStream shared by both sinks (never create second OutputStream)
@@ -62,5 +65,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-10
-Stopped at: v1.1 roadmap created
-Next: `/gsd:plan-phase 6`
+Stopped at: Completed 06-01-PLAN.md (dual-sink refactor + volume budget)
+Next: Execute 06-02-PLAN.md (ambient loop and validation)
