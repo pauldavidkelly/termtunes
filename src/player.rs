@@ -1,8 +1,12 @@
 use std::io::Cursor;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use color_eyre::Result;
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink};
+
+/// Seek step size for forward/backward seeking within a track.
+const SEEK_STEP: Duration = Duration::from_secs(5);
 
 /// Audio player wrapping rodio's OutputStream and Sink.
 ///
@@ -220,6 +224,51 @@ impl Player {
     /// (each new Sink starts at volume 1.0).
     pub fn set_volume(&self, vol: f32) {
         self.sink.set_volume(vol.clamp(0.0, 1.0));
+    }
+
+    /// Seek forward by SEEK_STEP (5 seconds), clamped to track duration.
+    ///
+    /// Uses rodio's try_seek which may not be supported by all decoders.
+    /// Callers should handle the error gracefully (log and ignore).
+    pub fn seek_forward(&self, track_duration_ms: u64) -> Result<(), rodio::source::SeekError> {
+        let current = self.sink.get_pos();
+        let max = Duration::from_millis(track_duration_ms);
+        let target = (current + SEEK_STEP).min(max);
+        self.sink.try_seek(target)
+    }
+
+    /// Seek backward by SEEK_STEP (5 seconds), saturating at 0.
+    ///
+    /// Uses rodio's try_seek which may not be supported by all decoders.
+    /// Callers should handle the error gracefully (log and ignore).
+    pub fn seek_backward(&self) -> Result<(), rodio::source::SeekError> {
+        let current = self.sink.get_pos();
+        let target = current.saturating_sub(SEEK_STEP);
+        self.sink.try_seek(target)
+    }
+
+    /// Replay the current track from cached audio bytes (Repeat One mode).
+    ///
+    /// Avoids re-downloading the track by re-decoding from the in-memory
+    /// audio data. Creates a fresh Sink to avoid blocking issues after stop().
+    pub fn replay_current(&mut self, volume: f32) -> Result<()> {
+        let audio_bytes = self
+            ._audio_data
+            .clone()
+            .ok_or_else(|| color_eyre::eyre::eyre!("No audio data to replay"))?;
+
+        // Stop current playback and create a fresh Sink
+        self.sink.stop();
+        self.sink = Sink::connect_new(self._stream.mixer());
+        self.sink.set_volume(volume.clamp(0.0, 1.0));
+
+        // Decode from cached bytes and start playback
+        let source = Decoder::new(Cursor::new(audio_bytes))
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to decode audio for replay: {}", e))?;
+        self.sink.append(source);
+
+        tracing::info!("Replaying track (Repeat One)");
+        Ok(())
     }
 }
 
