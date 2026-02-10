@@ -13,6 +13,7 @@ use crate::config::{self, Config, ServerConfig};
 use crate::player::Player;
 use crate::plex::{self, Playlist, PlexClient, PlexServer, Track};
 use crate::ui;
+use rand::seq::SliceRandom;
 
 // ---------------------------------------------------------------------------
 // App state machine
@@ -29,6 +30,38 @@ pub enum AppView {
     Downloading,
     /// Tracks view with active playback (user can select another track).
     Playing,
+}
+
+// ---------------------------------------------------------------------------
+// Repeat mode
+// ---------------------------------------------------------------------------
+
+/// Repeat mode for playlist playback.
+///
+/// Cycles: Off -> All -> One -> Off via the 'r' keybinding.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RepeatMode {
+    Off,
+    All,
+    One,
+}
+
+impl RepeatMode {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Off => Self::All,
+            Self::All => Self::One,
+            Self::One => Self::Off,
+        }
+    }
+
+    pub fn indicator(&self) -> &'static str {
+        match self {
+            Self::Off => "",
+            Self::All => "[Repeat: All]",
+            Self::One => "[Repeat: One]",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +143,18 @@ pub struct App {
     /// Persisted volume level across track changes.
     /// Each new rodio Sink starts at 1.0, so we save and restore this value.
     saved_volume: f32,
+
+    /// Whether shuffle mode is active (toggled with 's').
+    shuffle_enabled: bool,
+
+    /// Shuffled index array -- maps shuffle positions to track indices.
+    shuffle_order: Vec<usize>,
+
+    /// Current position within the shuffle_order array.
+    shuffle_position: usize,
+
+    /// Current repeat mode (Off, All, One) -- cycled with 'r'.
+    repeat_mode: RepeatMode,
 }
 
 impl App {
@@ -144,6 +189,10 @@ impl App {
             current_track_index: None,
             now_playing: None,
             saved_volume: 1.0,
+            shuffle_enabled: false,
+            shuffle_order: Vec::new(),
+            shuffle_position: 0,
+            repeat_mode: RepeatMode::Off,
         }
     }
 
@@ -206,6 +255,16 @@ impl App {
         self.saved_volume
     }
 
+    /// Whether shuffle mode is currently active.
+    pub fn shuffle_enabled(&self) -> bool {
+        self.shuffle_enabled
+    }
+
+    /// Get the current repeat mode.
+    pub fn repeat_mode(&self) -> RepeatMode {
+        self.repeat_mode
+    }
+
     // -----------------------------------------------------------------------
     // Event loop
     // -----------------------------------------------------------------------
@@ -225,12 +284,13 @@ impl App {
             // Check for completed downloads (non-blocking)
             self.check_download_complete()?;
 
-            // Auto-advance to next track when current track finishes
+            // Auto-advance to next track when current track finishes.
+            // Uses advance_track which respects repeat mode (One, All, Off).
             if self.view == AppView::Playing && self.download_rx.is_none() {
                 if let Some(player) = &self.player {
                     if player.is_finished() {
-                        tracing::info!("Track finished, auto-advancing to next");
-                        self.next_track()?;
+                        tracing::info!("Track finished, auto-advancing");
+                        self.advance_track()?;
                     }
                 }
             }
@@ -377,6 +437,36 @@ impl App {
             (KeyCode::Char('k'), _) | (KeyCode::Up, _) => self.move_selection_up(),
             // Select / Enter
             (KeyCode::Enter, _) => self.select_item().await?,
+            // Toggle shuffle (DIFF-01) -- s
+            (KeyCode::Char('s'), _) => {
+                self.toggle_shuffle();
+                tracing::info!(shuffle = self.shuffle_enabled, "Shuffle toggled");
+            }
+            // Cycle repeat mode (DIFF-02) -- r
+            (KeyCode::Char('r'), _) => {
+                self.repeat_mode = self.repeat_mode.cycle();
+                tracing::info!(mode = ?self.repeat_mode, "Repeat mode cycled");
+            }
+            // Seek forward (DIFF-03) -- l or Right (Playing view only)
+            (KeyCode::Char('l'), _) | (KeyCode::Right, _) => {
+                if matches!(self.view, AppView::Playing) {
+                    if let (Some(player), Some(np)) = (&self.player, &self.now_playing) {
+                        if let Err(e) = player.seek_forward(np.duration_ms) {
+                            tracing::warn!("Seek forward failed: {}", e);
+                        }
+                    }
+                }
+            }
+            // Seek backward (DIFF-03) -- h or Left (Playing view only)
+            (KeyCode::Char('h'), _) | (KeyCode::Left, _) => {
+                if matches!(self.view, AppView::Playing) {
+                    if let Some(player) = &self.player {
+                        if let Err(e) = player.seek_backward() {
+                            tracing::warn!("Seek backward failed: {}", e);
+                        }
+                    }
+                }
+            }
             // Back (from Tracks/Playing to Playlists)
             (KeyCode::Esc, _) | (KeyCode::Backspace, _) => self.go_back(),
             _ => {}
@@ -450,6 +540,17 @@ impl App {
                 // Sync current_track_index with list selection so next/prev
                 // work correctly after manual track selection (Pitfall 5).
                 self.current_track_index = self.track_state.selected();
+
+                // If shuffle is enabled, sync the shuffle position to the
+                // manually selected track (per Research Open Question 3).
+                if self.shuffle_enabled {
+                    if let Some(selected) = self.current_track_index {
+                        if let Some(pos) = self.shuffle_order.iter().position(|&i| i == selected) {
+                            self.shuffle_position = pos;
+                        }
+                    }
+                }
+
                 self.start_track_download()?;
             }
             AppView::Downloading => {
@@ -524,6 +625,10 @@ impl App {
                 self.current_playlist_title.clear();
                 self.current_track_index = None;
                 self.now_playing = None;
+                // Clear shuffle order when leaving playlist. shuffle_enabled
+                // and repeat_mode persist across playlist switches (player-wide).
+                self.shuffle_order.clear();
+                self.shuffle_position = 0;
             }
             _ => {}
         }
@@ -551,28 +656,229 @@ impl App {
         self.start_track_download()
     }
 
-    /// Skip to the next track in the playlist (wraps to beginning).
+    /// Get the next track index based on current mode (shuffle or sequential).
+    ///
+    /// Returns None if at end of playlist/shuffle order (caller decides wrap behavior).
+    fn next_track_index(&self) -> Option<usize> {
+        if self.tracks.is_empty() {
+            return None;
+        }
+        if self.shuffle_enabled {
+            let next_pos = self.shuffle_position + 1;
+            if next_pos < self.shuffle_order.len() {
+                Some(self.shuffle_order[next_pos])
+            } else {
+                None // End of shuffle order
+            }
+        } else {
+            match self.current_track_index {
+                Some(idx) if idx + 1 < self.tracks.len() => Some(idx + 1),
+                _ => None, // End of playlist
+            }
+        }
+    }
+
+    /// Get the previous track index based on current mode (shuffle or sequential).
+    ///
+    /// Returns None if at beginning of playlist/shuffle order.
+    fn prev_track_index(&self) -> Option<usize> {
+        if self.tracks.is_empty() {
+            return None;
+        }
+        if self.shuffle_enabled {
+            if self.shuffle_position > 0 {
+                Some(self.shuffle_order[self.shuffle_position - 1])
+            } else {
+                None // Beginning of shuffle order
+            }
+        } else {
+            match self.current_track_index {
+                Some(0) | None => Some(self.tracks.len() - 1), // Wrap to end
+                Some(idx) => Some(idx - 1),
+            }
+        }
+    }
+
+    /// Skip to the next track, respecting shuffle and repeat modes.
+    ///
+    /// For user-initiated skip (n/> key). RepeatMode::One is NOT handled here --
+    /// that is only for auto-advance. User skip always goes to next track.
     fn next_track(&mut self) -> Result<()> {
         if self.tracks.is_empty() {
             return Ok(());
         }
-        let next = match self.current_track_index {
-            Some(idx) if idx + 1 < self.tracks.len() => idx + 1,
-            _ => 0, // Wrap to beginning
-        };
-        self.play_track_at_index(next)
+        match self.next_track_index() {
+            Some(idx) => {
+                if self.shuffle_enabled {
+                    self.shuffle_position += 1;
+                }
+                self.play_track_at_index(idx)
+            }
+            None => {
+                // End of playlist/shuffle order
+                match self.repeat_mode {
+                    RepeatMode::All => {
+                        // Wrap around (reshuffle if shuffle enabled)
+                        if self.shuffle_enabled {
+                            self.regenerate_shuffle_order();
+                            if let Some(&first) = self.shuffle_order.first() {
+                                self.shuffle_position = 0;
+                                self.play_track_at_index(first)
+                            } else {
+                                Ok(())
+                            }
+                        } else {
+                            self.play_track_at_index(0)
+                        }
+                    }
+                    _ => Ok(()), // Off or One: do nothing at end
+                }
+            }
+        }
     }
 
-    /// Skip to the previous track in the playlist (wraps to end).
+    /// Skip to the previous track, respecting shuffle and repeat modes.
+    ///
+    /// Previous always wraps (existing behavior preserved).
     fn prev_track(&mut self) -> Result<()> {
         if self.tracks.is_empty() {
             return Ok(());
         }
-        let prev = match self.current_track_index {
-            Some(0) | None => self.tracks.len().saturating_sub(1),
-            Some(idx) => idx - 1,
-        };
-        self.play_track_at_index(prev)
+        match self.prev_track_index() {
+            Some(idx) => {
+                if self.shuffle_enabled {
+                    self.shuffle_position = self.shuffle_position.saturating_sub(1);
+                }
+                self.play_track_at_index(idx)
+            }
+            None => {
+                // At beginning of shuffle order or playlist
+                match self.repeat_mode {
+                    RepeatMode::All => {
+                        // Wrap to end
+                        if self.shuffle_enabled {
+                            let last_pos = self.shuffle_order.len().saturating_sub(1);
+                            if let Some(&last) = self.shuffle_order.last() {
+                                self.shuffle_position = last_pos;
+                                self.play_track_at_index(last)
+                            } else {
+                                Ok(())
+                            }
+                        } else {
+                            let last = self.tracks.len().saturating_sub(1);
+                            self.play_track_at_index(last)
+                        }
+                    }
+                    _ => {
+                        // Off or One: wrap to end anyway (prev always wraps)
+                        let last = self.tracks.len().saturating_sub(1);
+                        self.play_track_at_index(last)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Auto-advance to next track when current track finishes.
+    ///
+    /// Unlike next_track (user-initiated), this respects RepeatMode::One
+    /// by replaying the current track from cached audio bytes.
+    fn advance_track(&mut self) -> Result<()> {
+        match self.repeat_mode {
+            RepeatMode::One => {
+                // Replay current track from cached bytes (no re-download)
+                if let Some(player) = &mut self.player {
+                    if let Err(e) = player.replay_current(self.saved_volume) {
+                        tracing::warn!("Repeat One replay failed: {}, falling back to download", e);
+                        // Fallback: re-download if cached replay fails
+                        if let Some(idx) = self.current_track_index {
+                            self.play_track_at_index(idx)?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+            RepeatMode::All => {
+                match self.next_track_index() {
+                    Some(idx) => {
+                        if self.shuffle_enabled {
+                            self.shuffle_position += 1;
+                        }
+                        self.play_track_at_index(idx)
+                    }
+                    None => {
+                        // End of playlist/shuffle order -- wrap
+                        if self.shuffle_enabled {
+                            self.regenerate_shuffle_order();
+                            if let Some(&first) = self.shuffle_order.first() {
+                                self.shuffle_position = 0;
+                                self.play_track_at_index(first)
+                            } else {
+                                Ok(())
+                            }
+                        } else {
+                            self.play_track_at_index(0)
+                        }
+                    }
+                }
+            }
+            RepeatMode::Off => {
+                match self.next_track_index() {
+                    Some(idx) => {
+                        if self.shuffle_enabled {
+                            self.shuffle_position += 1;
+                        }
+                        self.play_track_at_index(idx)
+                    }
+                    None => Ok(()), // End of playlist -- stop
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Shuffle management
+    // -----------------------------------------------------------------------
+
+    /// Toggle shuffle mode on/off.
+    ///
+    /// When enabling: generates a shuffled index array with the current track
+    /// at position 0 (so the user continues from where they are).
+    /// When disabling: shuffle_order becomes unused (sequential navigation).
+    fn toggle_shuffle(&mut self) {
+        self.shuffle_enabled = !self.shuffle_enabled;
+        if self.shuffle_enabled && !self.tracks.is_empty() {
+            let mut indices: Vec<usize> = (0..self.tracks.len()).collect();
+            indices.shuffle(&mut rand::rng());
+            // Put current track at position 0 so user continues from here
+            if let Some(current) = self.current_track_index {
+                if let Some(pos) = indices.iter().position(|&i| i == current) {
+                    indices.swap(0, pos);
+                }
+            }
+            self.shuffle_position = 0;
+            self.shuffle_order = indices;
+        }
+    }
+
+    /// Regenerate the shuffle order (e.g., after wrapping in Repeat All).
+    ///
+    /// Places the current track at position 0 to avoid immediate repeat.
+    fn regenerate_shuffle_order(&mut self) {
+        if self.tracks.is_empty() {
+            self.shuffle_order.clear();
+            self.shuffle_position = 0;
+            return;
+        }
+        let mut indices: Vec<usize> = (0..self.tracks.len()).collect();
+        indices.shuffle(&mut rand::rng());
+        if let Some(current) = self.current_track_index {
+            if let Some(pos) = indices.iter().position(|&i| i == current) {
+                indices.swap(0, pos);
+            }
+        }
+        self.shuffle_order = indices;
+        self.shuffle_position = 0;
     }
 
     // -----------------------------------------------------------------------
