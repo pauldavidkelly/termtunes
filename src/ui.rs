@@ -6,12 +6,37 @@ use ratatui::Frame;
 
 use crate::app::{App, AppView};
 
+/// Minimum terminal width below which we show a "too small" message.
+const MIN_WIDTH: u16 = 20;
+
+/// Minimum terminal height below which we show a "too small" message.
+const MIN_HEIGHT: u16 = 5;
+
+/// Width threshold below which the UI switches to narrow/simplified layout.
+const NARROW_WIDTH: u16 = 40;
+
 /// Render the full UI frame based on the current app state.
 ///
 /// Layout: vertical split with main content area (Fill) and either a 3-line
 /// player bar (when a track is playing) or a 1-line status bar at the bottom.
+///
+/// Handles adaptive layout: shows a "too small" message for very small terminals,
+/// and switches to a simplified narrow layout for panes under 40 columns wide.
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    let width = area.width;
+
+    // Minimum viable display -- below this, just show a message
+    if width < MIN_WIDTH || area.height < MIN_HEIGHT {
+        let msg = Paragraph::new("Terminal too small")
+            .style(Style::default().fg(Color::Red))
+            .alignment(Alignment::Center);
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    let is_narrow = width < NARROW_WIDTH;
+
     let has_player_bar = app.now_playing().is_some();
     let bar_height = if has_player_bar { 3 } else { 1 };
 
@@ -20,22 +45,28 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Render main content based on current view
     match app.view() {
-        AppView::Playlists => render_playlists(frame, app, main_area),
-        AppView::Tracks | AppView::Playing => render_tracks(frame, app, main_area),
+        AppView::Playlists => render_playlists(frame, app, main_area, width),
+        AppView::Tracks | AppView::Playing => render_tracks(frame, app, main_area, width),
         AppView::Downloading => render_downloading(frame, main_area),
     }
 
     // Render player bar or status bar
     if has_player_bar {
-        render_player_bar(frame, app, bar_area);
+        render_player_bar(frame, app, bar_area, is_narrow, width);
     } else {
-        render_status_bar(frame, app, bar_area);
+        render_status_bar(frame, app, bar_area, is_narrow);
     }
 }
 
 /// Render the playlist list view.
-fn render_playlists(frame: &mut Frame, app: &mut App, area: Rect) {
+///
+/// Truncates playlist names to fit available width. In narrow mode, the track
+/// count suffix is dropped first before truncating the title.
+fn render_playlists(frame: &mut Frame, app: &mut App, area: Rect, width: u16) {
     let favorites = app.favorites();
+    // Available chars: width minus borders (2) and highlight symbol (">> " = 2)
+    let available = (width as usize).saturating_sub(4);
+
     let items: Vec<ListItem> = app
         .playlists()
         .iter()
@@ -51,7 +82,20 @@ fn render_playlists(frame: &mut Frame, app: &mut App, area: Rect) {
                 .leaf_count
                 .map(|c| format!(" ({} tracks)", c))
                 .unwrap_or_default();
-            ListItem::new(format!("{}{}{}", fav_prefix, p.title, count))
+
+            let full = format!("{}{}{}", fav_prefix, p.title, count);
+            // If it fits, use the full string; otherwise drop count first, then truncate
+            let display = if full.chars().count() <= available {
+                full
+            } else {
+                let without_count = format!("{}{}", fav_prefix, p.title);
+                if without_count.chars().count() <= available {
+                    without_count
+                } else {
+                    truncate_for_display(&without_count, available)
+                }
+            };
+            ListItem::new(display)
         })
         .collect();
 
@@ -76,9 +120,12 @@ fn render_playlists(frame: &mut Frame, app: &mut App, area: Rect) {
 /// Render the track list view (used for both Tracks and Playing states).
 ///
 /// When a track is currently playing, it is prefixed with ">>" and displayed
-/// in green+bold. Other tracks show a normal "  " prefix.
-fn render_tracks(frame: &mut Frame, app: &mut App, area: Rect) {
+/// in green+bold. Other tracks show a normal "  " prefix. Track names are
+/// truncated with ellipsis to fit the available width.
+fn render_tracks(frame: &mut Frame, app: &mut App, area: Rect, width: u16) {
     let playing_index = app.current_track_index();
+    // Available chars: width minus borders (2) and highlight symbol (">> " = 2)
+    let available = (width as usize).saturating_sub(4);
 
     let items: Vec<ListItem> = app
         .tracks()
@@ -89,16 +136,20 @@ fn render_tracks(frame: &mut Frame, app: &mut App, area: Rect) {
             let is_playing = playing_index == Some(i);
 
             if is_playing {
+                let full = format!(">> {} - {}", t.title, artist);
+                let display = truncate_for_display(&full, available);
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!(">> {} - {}", t.title, artist),
+                        display,
                         Style::default()
                             .fg(Color::Green)
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]))
             } else {
-                ListItem::new(format!("   {} - {}", t.title, artist))
+                let full = format!("   {} - {}", t.title, artist);
+                let display = truncate_for_display(&full, available);
+                ListItem::new(display)
             }
         })
         .collect();
@@ -137,9 +188,11 @@ fn render_downloading(frame: &mut Frame, area: Rect) {
 /// Render the 3-line player bar at the bottom of the screen.
 ///
 /// Line 1: State icon + track name + artist + album (multi-colored).
+///         In narrow mode, only shows state icon + track name (truncated).
 /// Line 2: Progress bar (LineGauge) showing elapsed/total ratio.
 /// Line 3: Playback state + volume + elapsed/total time (or error if present).
-fn render_player_bar(frame: &mut Frame, app: &App, area: Rect) {
+///         In narrow mode, only shows state label + time (drops volume/shuffle/repeat).
+fn render_player_bar(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool, width: u16) {
     // Split the 3-line area into three rows of 1 line each
     let [line1_area, line2_area, line3_area] = Layout::vertical([
         Constraint::Length(1),
@@ -172,19 +225,35 @@ fn render_player_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let separator_style = Style::default().fg(Color::DarkGray);
 
-    let track_info = Line::from(vec![
-        Span::styled(state_icon, icon_style),
-        Span::styled(
-            &np.track_name,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" - ", separator_style),
-        Span::styled(&np.artist, Style::default().fg(Color::Cyan)),
-        Span::styled(" - ", separator_style),
-        Span::styled(&np.album, Style::default().fg(Color::Yellow)),
-    ]);
+    let track_info = if is_narrow {
+        // Narrow mode: show only state icon + truncated track name
+        let icon_len = state_icon.chars().count();
+        let max_name = (width as usize).saturating_sub(icon_len);
+        let name = truncate_for_display(&np.track_name, max_name);
+        Line::from(vec![
+            Span::styled(state_icon, icon_style),
+            Span::styled(
+                name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(state_icon, icon_style),
+            Span::styled(
+                &np.track_name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" - ", separator_style),
+            Span::styled(&np.artist, Style::default().fg(Color::Cyan)),
+            Span::styled(" - ", separator_style),
+            Span::styled(&np.album, Style::default().fg(Color::Yellow)),
+        ])
+    };
 
     frame.render_widget(Paragraph::new(track_info), line1_area);
 
@@ -237,45 +306,50 @@ fn render_player_bar(frame: &mut Frame, app: &App, area: Rect) {
 
         let sep = Span::styled(" | ", Style::default().fg(Color::DarkGray));
 
-        let volume_pct = if let Some(player) = app.player() {
-            (player.volume() * 100.0).round() as u8
-        } else {
-            0
-        };
-
-        let volume_span = Span::styled(
-            format!("Vol: {}%", volume_pct),
-            Style::default().fg(Color::White),
-        );
-
         let time_span = Span::styled(
             format!("{} / {}", format_duration(elapsed), format_duration(total_duration)),
             Style::default().fg(Color::White),
         );
 
-        // Build spans incrementally to support optional shuffle/repeat indicators
-        let mut spans = vec![state_label, sep.clone(), volume_span, sep.clone(), time_span];
+        if is_narrow {
+            // Narrow mode: only state label + time (drop volume, shuffle, repeat)
+            Line::from(vec![state_label, sep, time_span])
+        } else {
+            let volume_pct = if let Some(player) = app.player() {
+                (player.volume() * 100.0).round() as u8
+            } else {
+                0
+            };
 
-        // Shuffle indicator (magenta)
-        if app.shuffle_enabled() {
-            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
-            spans.push(Span::styled(
-                "[Shuffle]",
-                Style::default().fg(Color::Magenta),
-            ));
+            let volume_span = Span::styled(
+                format!("Vol: {}%", volume_pct),
+                Style::default().fg(Color::White),
+            );
+
+            // Build spans incrementally to support optional shuffle/repeat indicators
+            let mut spans = vec![state_label, sep.clone(), volume_span, sep.clone(), time_span];
+
+            // Shuffle indicator (magenta)
+            if app.shuffle_enabled() {
+                spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(
+                    "[Shuffle]",
+                    Style::default().fg(Color::Magenta),
+                ));
+            }
+
+            // Repeat indicator (blue)
+            let repeat_text = app.repeat_mode().indicator();
+            if !repeat_text.is_empty() {
+                spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(
+                    repeat_text,
+                    Style::default().fg(Color::Blue),
+                ));
+            }
+
+            Line::from(spans)
         }
-
-        // Repeat indicator (blue)
-        let repeat_text = app.repeat_mode().indicator();
-        if !repeat_text.is_empty() {
-            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
-            spans.push(Span::styled(
-                repeat_text,
-                Style::default().fg(Color::Blue),
-            ));
-        }
-
-        Line::from(spans)
     };
 
     frame.render_widget(Paragraph::new(status_line), line3_area);
@@ -290,7 +364,8 @@ fn format_duration(d: std::time::Duration) -> String {
 /// Render the single-line status bar when no track is playing.
 ///
 /// Shows error messages (red) if present, otherwise shows keybinding help.
-fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+/// In narrow mode, shows abbreviated help text with just the essential keys.
+fn render_status_bar(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool) {
     let (text, style) = if app.awaiting_favorite_key() {
         (
             " Press 1-9 to assign favorite, Esc to cancel".to_string(),
@@ -300,6 +375,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         (
             format!(" ERROR: {} ", err),
             Style::default().fg(Color::White).bg(Color::Red),
+        )
+    } else if is_narrow {
+        (
+            " q:quit j/k:nav Enter:sel Space:pause".to_string(),
+            Style::default().fg(Color::White).bg(Color::DarkGray),
         )
     } else {
         (
@@ -311,4 +391,25 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     let status = Paragraph::new(Span::styled(text, style)).style(style);
     frame.render_widget(status, area);
+}
+
+/// Truncate a string to fit within `max_chars` characters, appending "..." if
+/// the string is too long.
+///
+/// Uses `.chars()` for truncation (not byte-based) to avoid panics on
+/// multi-byte UTF-8 characters.
+///
+/// - If the string fits within `max_chars`, returns it unchanged.
+/// - If `max_chars <= 3`, returns the first `max_chars` characters (no ellipsis).
+/// - Otherwise, returns the first `max_chars - 3` characters followed by "...".
+fn truncate_for_display(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else if max_chars <= 3 {
+        s.chars().take(max_chars).collect()
+    } else {
+        let mut truncated: String = s.chars().take(max_chars - 3).collect();
+        truncated.push_str("...");
+        truncated
+    }
 }

@@ -315,12 +315,17 @@ impl App {
                 ui::render(frame, self);
             })?;
 
-            // Poll for keyboard events with 100ms timeout.
+            // Poll for events with 100ms timeout.
             if event::poll(Duration::from_millis(100))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.handle_key(key.code, key.modifiers).await?;
                     }
+                    Event::Resize(_w, _h) => {
+                        // Fullscreen ratatui auto-resizes buffers on next draw().
+                        // No action needed -- loop continues and draw() is called.
+                    }
+                    _ => {}
                 }
             }
         }
