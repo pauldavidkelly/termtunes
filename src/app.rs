@@ -728,19 +728,22 @@ impl App {
 
     /// Go back from Tracks/Playing view to Playlists view.
     ///
-    /// Also clears playback state (current track index, now playing metadata)
-    /// since we are leaving the playlist context.
+    /// Clears navigation state (tracks list, shuffle order) for the UI, but
+    /// preserves session-relevant fields (playlist key/title, track index,
+    /// now_playing) so that `save_session_state()` can still capture the last
+    /// playing context when the user quits from the Playlists view.
     fn go_back(&mut self) {
         match self.view {
             AppView::Tracks | AppView::Playing => {
                 self.view = AppView::Playlists;
                 self.tracks.clear();
-                self.current_playlist_title.clear();
-                self.current_playlist_rating_key = None;
-                self.current_track_index = None;
-                self.now_playing = None;
-                // Clear shuffle order when leaving playlist. shuffle_enabled
-                // and repeat_mode persist across playlist switches (player-wide).
+                // NOTE: Do NOT clear current_playlist_title, current_playlist_rating_key,
+                // current_track_index, or now_playing here. These are needed by
+                // save_session_state() if the user quits from the Playlists view
+                // while music is still playing. They will be overwritten naturally
+                // when the user selects a new playlist (select_item/start_favorite).
+                //
+                // Clear shuffle navigation state (regenerated when entering a playlist).
                 self.shuffle_order.clear();
                 self.shuffle_position = 0;
             }
