@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 2: Core TUI and Playback** - Build the playlist browser, player bar, and full playback controls with vim keybindings
 - [x] **Phase 3: Differentiators** - Add favorite playlist hotkeys, shuffle, repeat, and seek -- the features that make TermTunes unique
 - [x] **Phase 4: Tmux Integration and Polish** - Optimize for narrow tmux panes, add status bar integration and session persistence
-- [ ] **Phase 5: Audio Visualizer** - Add toggleable spectrum visualizer as the final aesthetic layer
+- [x] **Phase 5: Audio Visualizer** - Add toggleable spectrum visualizer as the final aesthetic layer
 
 ## Phase Details
 
@@ -103,7 +103,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 2. Core TUI and Playback | 2/2 | Complete | 2026-02-10 |
 | 3. Differentiators | 2/2 | Complete | 2026-02-10 |
 | 4. Tmux Integration and Polish | 2/2 | Complete | 2026-02-10 |
-| 5. Audio Visualizer | 0/1 | Not started | - |
+| 5. Audio Visualizer | 1/1 | Complete | 2026-02-10 |
 
 ---
 *Roadmap created: 2026-02-10*

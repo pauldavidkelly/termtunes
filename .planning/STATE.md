@@ -96,6 +96,7 @@ Recent decisions affecting current work:
 - [05-01]: FFT computed on UI thread at render tick rate (~10Hz), not on audio thread
 - [05-01]: Auto-hide visualizer in narrow (<40 cols) and short (<20 rows) terminals
 - [05-01]: 32 default bars with dynamic width-based adjustment (4..64 range)
+- [05-01-fix]: compute_spectrum_bars returns zeros when paused (not None) to allow bar decay via smoothing
 
 ### Pending Todos
 
