@@ -1,280 +1,412 @@
-# Pitfalls Research
+# Domain Pitfalls: Multi-Channel Audio & Track Browsing
 
-**Domain:** TUI Music Player with Plex Integration (TermTunes)
-**Researched:** 2026-02-08
-**Confidence:** MEDIUM-HIGH (multiple sources corroborate; WSL audio pitfalls verified via GitHub issues)
+**Domain:** Adding concurrent ambient audio layer to existing TUI music player
+**Researched:** 2026-02-10
+**Confidence:** MEDIUM-HIGH
+**Context:** TermTunes -- working Rust/rodio 0.21/ratatui TUI player on WSL2. Adding second audio channel (ambient tracks that loop beneath main music) with independent volume control and track browsing UI.
+
+---
 
 ## Critical Pitfalls
 
-### Pitfall 1: WSLg Audio Breaks After Pause/Resume
-
-**What goes wrong:**
-Audio playback hangs indefinitely when resuming after pausing for more than ~5 seconds in WSL2. The PulseAudio stream fails to reinitialize, leaving the media player stuck until killed. This affects cmus, ncmpcpp, mpv, and any application using PulseAudio through WSLg. Separate from this, WSLg audio suffers from chronic latency (sounds echoed back up to 10 seconds later), crackling/stuttering (alternating 1-second audio / 1-second silence), and complete audio dropout under CPU load.
-
-**Why it happens:**
-WSLg provides only a rudimentary PulseAudio connection between Linux and Windows. The PulseAudio bridge does not properly handle stream state transitions (playing -> paused -> playing). The audio buffer management in the WSL PulseAudio shim is fragile -- when a stream is corked (paused) for more than a few seconds, the buffer state becomes inconsistent and the stream cannot resume. A fix exists in the PulseAudio repo but has not been merged into the WSLg system image as of WSL 2.6.1.0.
-
-**How to avoid:**
-- Decouple audio output from the TUI process entirely. Use a client/server architecture (like MPD) or stream audio via HTTP to a local player on the Windows side.
-- If using PulseAudio directly: implement a watchdog that detects stalled playback (no audio callback for N ms after resume) and automatically tears down and recreates the audio stream rather than hanging.
-- Consider outputting audio via a Windows-native player (e.g., streaming the Plex URL to a Windows media player process) and controlling it from the TUI, bypassing WSL audio entirely.
-- Increase PulseAudio buffer sizes to reduce crackling: set `PULSE_LATENCY_MSEC=60` or higher.
-- Test with `PULSE_SERVER=tcp:127.0.0.1` explicitly set, not relying on WSLg's automatic socket.
-
-**Warning signs:**
-- Audio works initially but hangs after first pause/resume cycle
-- `pactl list sinks` shows the sink but `pactl list sink-inputs` shows no active inputs after resume
-- Log messages about "buffer underrun" or "stream cork/uncork" failures
-- Users on Windows 10 or older WSL versions report total silence
-
-**Phase to address:**
-Phase 1 (Foundation) -- this is an architectural decision. If WSL audio proves unreliable, the entire playback architecture must accommodate it. Must be validated in the first sprint with a proof-of-concept audio playback test.
+Mistakes that cause rewrites, audio corruption, or broken existing functionality.
 
 ---
 
-### Pitfall 2: Plex Authentication Token Lifecycle Mismanagement
+### Pitfall 1: Mixer Clipping When Two Sinks Sum to > 1.0
 
 **What goes wrong:**
-Third-party Plex apps hardcode or cache authentication tokens without handling expiration, revocation, or the full PIN-based OAuth flow. Tokens become invalid when users change passwords (with "sign out connected devices" checked), when servers restart (transient tokens last only 48 hours), or when Plex rotates credentials. The app silently fails or crashes instead of re-authenticating.
+Rodio's internal mixer sums f32 samples from all connected Sinks before sending to the OS audio backend. When main music is at volume 0.8 and ambient is at volume 0.6, their combined peak samples can reach 1.4, exceeding the f32 range of -1.0 to 1.0. The audio backend clips these peaks, producing harsh crackling/distortion at every beat or loud ambient swell. Users hear it as "random crackling" and blame WSL2 audio -- but it is actually summing overflow in the mixer.
 
 **Why it happens:**
-The Plex auth system has multiple token types with different lifetimes: transient tokens (48 hours, invalid on server restart), user tokens (long-lived but revocable), and the newer JWT-based tokens (7-day refresh cycle). Developers often grab a token from the browser's developer tools during testing and hardcode it, never implementing the proper PIN-based flow. The PIN-based flow requires polling or forwarding, generating and persisting a stable Client Identifier, and handling PIN expiration gracefully.
+The existing player caps volume at 1.0 per-sink (`volume.clamp(0.0, 1.0)`), which is correct for single-channel playback. But rodio's mixer does naive additive mixing -- it does not normalize or limit the combined output. Two sources at full volume will produce samples up to 2.0, which clip when converted to the output format. This is not a bug in rodio; it is standard audio mixer behavior. The problem is that developers coming from single-source playback never encounter it and do not design for it.
 
-**How to avoid:**
-- Implement the full PIN-based authentication flow from day one. Generate a PIN via the Plex API, construct an auth URL, open it in the user's browser, and poll for completion.
-- Store the Client Identifier (UUID) persistently -- reuse it across sessions. Plex uses this to identify your app instance.
-- Send all required headers on every request: `X-Plex-Product`, `X-Plex-Client-Identifier`, `X-Plex-Token`, `accept: application/json`.
-- Validate stored tokens on startup by making a test request (HTTP 200 = valid, 401 = expired).
-- Implement automatic re-authentication: on any 401 response, trigger the PIN flow again rather than crashing.
-- Consider the newer JWT flow (register public key, refresh every 7 days, exchange for X-Plex-Token) for more robust long-term auth.
+**Consequences:**
+- Harsh crackling/distortion whenever both channels have simultaneous peaks
+- Users blame WSL2 audio quality (since the app already had WSL2 audio issues)
+- Volume controls "feel broken" -- turning up ambient makes main music distort
+- The issue is intermittent (only at peaks), making it hard to reproduce and debug
 
-**Warning signs:**
-- App works for the developer but fails for other users
-- "Works for a while then stops" reports from testers
-- No token refresh logic in the codebase
-- Token stored in plaintext config files without validation on load
+**Prevention:**
+- Set a combined volume budget. If main is at volume M and ambient is at volume A, ensure M + A <= 1.0 at all times. Use a master gain factor: `effective_main = M * master`, `effective_ambient = A * master`, where `master = 1.0 / max(M + A, 1.0)`.
+- Simpler approach: cap each channel's effective volume so their sum never exceeds 1.0. For example, main max 0.7, ambient max 0.3. Or use a fixed ratio like 70/30.
+- Apply the volume budget at the Sink level (`sink.set_volume()`), not in a custom Source wrapper. Sink volume is applied before mixing, so if both sinks are at 0.5, the mixer sum maxes at 1.0.
+- Test with both channels at maximum volume playing loud source material. If no distortion, the budget is working.
 
-**Phase to address:**
-Phase 1 (Foundation) -- authentication is the gateway to every Plex feature. Build the PIN flow first, validate it works end-to-end, before building any library browsing.
+**Detection:**
+- Listen test: play loud music + loud ambient simultaneously, listen for crackling distinct from WSL2 baseline
+- Log-based: if you can tap the mixed output, check for samples > 0.95 (near clipping)
+- User reports of "crackling that was not there before the update"
+
+**Phase to address:** Phase 1 (ambient audio foundation) -- the volume budget must be part of the initial two-sink architecture. Retrofitting it later requires changing every volume control path.
+
+**Confidence:** HIGH -- this is basic digital audio mixing math, confirmed by rodio's documented behavior ("all sounds are mixed together by rodio") and the known clipping issue (GitHub issue #340).
 
 ---
 
-### Pitfall 3: Rendering Large Music Libraries Causes UI Lag
+### Pitfall 2: OutputStream Lifetime -- Dropping It Kills ALL Audio
 
 **What goes wrong:**
-Rendering a music library with thousands of tracks (common for Plex users with 10k-100k+ tracks) causes the TUI to become unresponsive. Scrolling lags 1-2 seconds per input. The entire UI freezes during library fetches. This is a two-layer problem: the Plex API is slow for large libraries (database queries on hundreds of thousands of metadata entries), and TUI frameworks like ratatui compute layout for ALL items on every render frame, not just visible ones.
+The existing code stores a single `OutputStream` (as `_stream`) and creates new Sinks from it via `Sink::connect_new(self._stream.mixer())`. When adding a second sink for ambient audio, a developer might accidentally create a second `OutputStream`, or restructure the Player struct in a way that the original `OutputStream` gets dropped during a refactor. Dropping the `OutputStream` immediately and silently kills ALL audio on ALL sinks connected to it -- no error, no warning, just silence.
 
 **Why it happens:**
-On the Plex side: music metadata is complex, library scans can take days, and API responses for large collections are slow. The `/library/sections/{id}/all` endpoint returns everything by default. On the TUI side: ratatui's Table and List widgets convert all items to vectors on every render cycle and compute `text().height()` for every item to determine which are visible. With 15k+ items, this causes noticeable frame drops.
+Rodio's `OutputStream` owns the connection to the OS audio device. All Sinks created from its mixer share this connection. The API gives no error when appending to a Sink whose OutputStream has been dropped -- the audio just never reaches the speakers. The existing code already handles this correctly with `_stream` (the underscore-prefix convention for "kept alive"), but refactoring for two-channel support may break this invariant. This is rodio's single most common gotcha (GitHub issues #330, #555).
 
-**How to avoid:**
-- **Mandatory pagination on the Plex side:** Use the `X-Plex-Container-Start` and `X-Plex-Container-Size` headers (or query params) to page through results. Never fetch an entire library in one call. The `/children` and `/grandchildren` endpoints require mandatory paging per Plex's own API guidelines.
-- **Local caching:** Cache library metadata locally (SQLite or similar) and sync incrementally. Do not re-fetch the full library on every app launch.
-- **Virtual scrolling on the TUI side:** Only pass visible items (plus a small buffer) to the ratatui widget. Pre-filter your dataset before passing it to `Table::new()` or `List::new()`. Do not construct widget items for off-screen rows.
-- **Async data loading:** Fetch library data on a background thread/task. Show a loading indicator. Never block the render loop on network I/O.
-- Profile with `cargo-flamegraph` to identify actual rendering hotspots rather than guessing.
+**Consequences:**
+- Complete silence with no error messages
+- Extremely difficult to debug -- everything appears to work, logs show playback started, but no sound comes out
+- Intermittent if the OutputStream is conditionally recreated (e.g., ambient channel creates its own stream)
 
-**Warning signs:**
-- UI freezes for seconds when opening the library view
-- Scrolling feels "chunky" rather than smooth
-- Memory usage spikes when loading large libraries
-- The app feels fine with a test library of 50 tracks but unusable with a real collection
+**Prevention:**
+- Use ONE `OutputStream` for the entire application. Both the main sink and ambient sink MUST be created from the same `OutputStream::mixer()`. Never create a second `OutputStream`.
+- Keep the existing `_stream` field. Add the ambient sink as a new field alongside the existing sink, both connected to the same `_stream.mixer()`.
+- Add a comment at the `OutputStream` field: `// CRITICAL: dropping this kills ALL audio. Both main_sink and ambient_sink depend on it.`
+- In tests, verify that creating a second Sink from the same mixer does not require or create a new OutputStream.
 
-**Phase to address:**
-Phase 2 (Library Browsing) -- but the architecture for pagination and caching must be designed in Phase 1. Retrofitting pagination onto a "fetch everything" design requires a rewrite.
+**Detection:**
+- Complete silence after a code change that restructured the Player struct
+- `_stream` variable name changed or moved to a different scope
+- Audio works on first track but fails after a player recreate
+
+**Phase to address:** Phase 1 (ambient audio foundation) -- this is the first thing to get right when modifying the Player struct.
+
+**Confidence:** HIGH -- confirmed by rodio documentation, multiple GitHub issues, and the existing codebase already handles this (proving it is a real concern).
 
 ---
 
-### Pitfall 4: Not Reporting Playback State to Plex (Scrobbling/Timeline)
+### Pitfall 3: `repeat_infinite()` Memory Leak for Ambient Loops
 
 **What goes wrong:**
-The player works but Plex has no idea anything is playing. "Now Playing" doesn't show on the Plex dashboard. Play counts don't update. "On Deck" and "Continue Listening" don't work. Tautulli shows no activity. The app feels like a second-class citizen -- technically functional but not integrated into the Plex ecosystem.
+The natural approach for looping ambient audio is `source.repeat_infinite()`, which rodio provides for exactly this purpose. However, `repeat_infinite()` has a documented memory leak (rodio GitHub issue #673): memory grows ~10MB every 15 seconds due to a bug in the `Buffered` type's clone implementation. For an ambient track that loops for hours, this will consume gigabytes of RAM and eventually crash the application or trigger OOM kills.
 
 **Why it happens:**
-Plex expects clients to actively report their playback state via timeline updates to `/:/timeline`. This includes reporting play, pause, stop, and periodic progress updates. Third-party developers focus on getting audio to play and forget that Plex's entire UX (dashboard, recommendations, history) depends on clients reporting back. Without timeline updates, it's as if the music was never played.
+`repeat_infinite()` internally calls `.buffered()` and clones the buffered source each time it loops. The `Buffered` type's clone implementation does not properly release old buffer segments, causing cumulative memory growth. The maintainers acknowledge the issue but note that the buffered implementation "may require a complete rewrite." The leak eventually stabilizes at some multiple of the source size (one user saw 3MB file stabilize at ~300MB), but this is still unacceptable for a long-running music player.
 
-**How to avoid:**
-- Implement timeline reporting from the start of playback development, not as an afterthought.
-- Send timeline updates: on play, on pause, on stop, on seek, and periodically during playback (every 10-30 seconds).
-- Include required fields: `ratingKey`, `key`, `playbackTime`, `state` (playing/paused/stopped), `duration`.
-- Register the player as a controllable client so it appears in Plex's "Cast To" interface.
-- Test with Tautulli running to verify your timeline reports are received correctly.
+**Consequences:**
+- Memory usage grows continuously during ambient playback
+- After hours of use (the primary use case -- user has ambient on 90% of the time), the app consumes hundreds of MB or GBs
+- OOM kill on memory-constrained systems, or system slowdown
+- Users see the app as "leaky" and unreliable for the exact feature they use most
 
-**Warning signs:**
-- Plex dashboard shows "No active sessions" while music is playing
-- Play counts on tracks remain at 0 after listening
-- "On Deck" for music never updates
-- Tautulli history is empty for your client
+**Prevention:**
+- Do NOT use `repeat_infinite()` for ambient looping. Instead, implement manual loop detection and re-append.
+- Approach 1 (recommended): Use `sink.empty()` polling in the event loop (already present for main track auto-advance). When the ambient sink reports empty, re-decode from cached bytes and append again. This mirrors the existing `replay_current()` pattern.
+- Approach 2: Create a custom `Source` wrapper that re-reads from a `Cursor<Vec<u8>>` when the inner decoder returns `None`, avoiding the `Buffered` allocation entirely. This is more complex but provides seamless looping without the gap that approach 1 might introduce.
+- Approach 3: Pre-decode the entire ambient track into a `Vec<f32>` sample buffer, then wrap in a custom `Source` that loops over the buffer index. Simple, but uses memory proportional to decoded audio (much larger than compressed).
+- For any approach, monitor memory usage during development. A 5-minute test with looping ambient should show stable RSS.
 
-**Phase to address:**
-Phase 3 (Playback) -- timeline reporting should be implemented alongside basic playback, not deferred to a later "polish" phase.
+**Detection:**
+- Monitor process RSS over time during ambient playback (`/proc/self/status` VmRSS)
+- Memory growth correlated with ambient loop iterations
+- Eventually: OOM kill or system slowdown after hours of use
+
+**Phase to address:** Phase 1 (ambient audio foundation) -- the looping mechanism is a core design decision. Must be validated early because it affects the entire ambient playback architecture.
+
+**Confidence:** HIGH -- documented open issue #673 on rodio GitHub with confirmed reproduction, maintainer acknowledgment, and no fix as of 2025.
 
 ---
 
-### Pitfall 5: Terminal Escape Sequence Cleanup Failure on Crash/Exit
+### Pitfall 4: Breaking Existing Playback When Refactoring Player Struct
 
 **What goes wrong:**
-When the TUI app crashes, is killed (SIGKILL/SIGTERM), or exits abnormally, the terminal is left in a broken state. Symptoms include: invisible cursor, no echo of typed characters, mouse tracking escape sequences flooding as raw text, alternate screen buffer still active (previous terminal content lost), raw mode still enabled (no line editing). Users must run `reset` or close and reopen the terminal.
+The existing `Player` struct has a single `sink` field and methods like `load_and_play()`, `toggle_pause()`, `is_finished()`, `replay_current()`, `seek_forward()`, `seek_backward()` that all operate on `self.sink`. Adding an ambient channel requires either: (a) adding a second sink field, or (b) restructuring into a different architecture. Either path risks breaking the battle-tested main playback path through subtle changes: wrong sink paused, volume applied to wrong channel, `is_finished()` checking wrong sink, seek operating on ambient instead of main.
 
 **Why it happens:**
-TUI apps enable raw mode, alternate screen, mouse tracking, and disable cursor visibility. These are terminal state changes communicated via escape sequences. If the app doesn't run cleanup code (disable raw mode, leave alternate screen, show cursor, disable mouse tracking), the terminal stays in the modified state. Signal handlers for SIGINT/SIGTERM may not be registered, and SIGKILL cannot be caught at all. Panic handlers in Rust don't automatically restore terminal state.
+The current code is clean but tightly coupled to a single-sink model. Every method implicitly operates on "the one sink." When there are two sinks, every method must explicitly specify which sink it targets. Missing even one creates a bug. Additionally, `App.check_download_complete()` calls `player.load_and_play()` which recreates the sink -- if the ambient sink shares state, this recreation could disrupt ambient playback.
 
-**How to avoid:**
-- Register signal handlers for SIGINT, SIGTERM, and SIGHUP that restore terminal state before exiting.
-- Set a custom panic hook in Rust that restores terminal state before printing the panic message.
-- Use `scopeguard` or RAII patterns to ensure cleanup runs on all exit paths.
-- Store the original terminal state (tcgetattr) at startup and restore it in all cleanup paths.
-- Specifically disable mouse tracking modes (SGR extended mouse tracking) in cleanup -- this is the most commonly missed one.
-- Test by sending SIGTERM to your app and verifying the terminal recovers cleanly.
+**Consequences:**
+- Spacebar pauses ambient instead of (or in addition to) main music
+- Volume up/down changes ambient volume instead of main
+- `is_finished()` returns true when ambient finishes its loop (not when main track ends)
+- Auto-advance triggers when ambient loop ends, skipping to next main track
+- Seek operates on ambient channel, doing nothing audible
 
-**Warning signs:**
-- Terminal behaves strangely after the app exits (especially after Ctrl+C)
-- Raw escape sequences appear as garbled text after exit
-- Mouse clicks produce escape sequence text instead of normal behavior
-- Users report needing to run `reset` after using the app
+**Prevention:**
+- Separate concerns cleanly: create an `AmbientPlayer` struct (or similar) alongside the existing `Player`. Do NOT modify the existing `Player` struct's method signatures. The `Player` continues to manage main playback exactly as it does today.
+- If using a combined struct, rename the existing sink to `main_sink` and add `ambient_sink`. Update ALL existing method references from `self.sink` to `self.main_sink` in a single, reviewable commit before adding any ambient logic.
+- The `is_finished()` method must ONLY check `main_sink.empty()`. The ambient sink is never "finished" (it loops).
+- `toggle_pause()` should pause/resume BOTH sinks simultaneously (user expectation: spacebar controls all audio).
+- Volume controls should be channel-specific: existing +/- keys control main, new keybindings control ambient.
+- Write tests for: pause pauses both, volume changes only target channel, is_finished ignores ambient, seek only affects main.
 
-**Phase to address:**
-Phase 1 (Foundation) -- terminal state management is foundational infrastructure. Every feature built on top of it inherits the cleanup behavior (or lack thereof).
+**Detection:**
+- Any behavior change in existing playback after the refactor (regression)
+- Ambient track influences main track auto-advance
+- Volume controls feel "wrong" or affect unexpected channel
+
+**Phase to address:** Phase 1 (ambient audio foundation) -- the struct refactoring is the first implementation step and the highest-risk change to existing functionality.
+
+**Confidence:** HIGH -- directly observable from the codebase structure. Every method in `player.rs` references `self.sink`.
 
 ---
 
-## Technical Debt Patterns
+## Moderate Pitfalls
 
-Shortcuts that seem reasonable but create long-term problems.
+Issues that cause bugs or degraded experience but are recoverable.
 
-| Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
-|----------|-------------------|----------------|-----------------|
-| Fetch entire library on startup | Simple implementation, no pagination logic | Unusable for libraries >5k tracks, high memory, slow startup | Never -- design pagination from start |
-| Hardcode Plex token in config | Skip auth flow implementation, faster dev | Tokens expire, no multi-user support, security risk | Only during initial PoC (first week), must replace before any user testing |
-| Synchronous network requests on render thread | Simpler control flow, no async complexity | UI freezes on every API call, unusable on slow networks | Never -- async from day one |
-| Skip terminal cleanup on panic | Faster to get something running | Every crash leaves terminal broken, terrible UX | Never -- implement in first commit |
-| Single audio backend hardcoded | Less code, faster to ship | Breaks on different Linux distros, WSL versions, or when preferred backend unavailable | MVP only -- add backend abstraction by Phase 3 |
-| Polling Plex API for library changes | Simple, no websocket complexity | Unnecessary API calls, delayed updates, potential rate limiting | Acceptable for v1, add webhooks later |
-| Storing all track metadata in memory | Fast access, no database code | Memory bloat with large libraries (100k tracks x metadata = hundreds of MB) | Acceptable up to ~10k tracks, need local cache beyond that |
+---
 
-## Integration Gotchas
+### Pitfall 5: Ambient Pause/Resume Desynchronizes from Main
 
-Common mistakes when connecting to Plex.
+**What goes wrong:**
+User pauses (spacebar), both channels pause. User unpauses, both resume. But after extended pause on WSL2 (>5 seconds), the PulseAudio stream for one sink may fail to resume while the other succeeds. Result: main music plays but ambient is silent, or vice versa. The existing codebase already documents this WSL2 issue in the Player struct comment: "WSL2 workaround if pause/resume fails after extended pauses."
 
-| Integration | Common Mistake | Correct Approach |
-|-------------|----------------|------------------|
-| Plex Auth | Using token copied from browser DevTools | Implement PIN-based OAuth flow; store Client Identifier persistently |
-| Plex Library API | Calling `/library/sections/{id}/all` without pagination | Use `X-Plex-Container-Start` and `X-Plex-Container-Size` params; page through results |
-| Plex Streaming | Forcing transcoding by not declaring client capabilities | Send proper `X-Plex-Client-Profile-Extra` headers declaring supported audio codecs (FLAC, AAC, MP3, etc.) to get direct play |
-| Plex Streaming | Building stream URL manually | Use the `part.key` from metadata response with the server base URL and token; handle HTTPS certificate issues for local servers |
-| Plex Timeline | Not sending playback progress | POST to `/:/timeline` with state/time every 10-30 seconds; on play/pause/stop/seek |
-| Plex Rate Limits | Rapid-fire API calls during library browsing | Implement request debouncing/throttling; batch metadata requests; cache aggressively. Plex returns HTTP 429 and can lock the server database under heavy load |
-| Plex Server Discovery | Hardcoding server IP/port | Use Plex.tv's `/api/v2/resources` to discover servers; handle servers behind relay (indirect connections) |
-| WSLg PulseAudio | Assuming PulseAudio "just works" in WSL | Test pause/resume explicitly; implement stream recreation on failure; consider Windows-side audio as fallback |
-| Tmux | Enabling mouse tracking that conflicts with tmux mouse mode | Detect `$TMUX` environment variable; adjust mouse behavior or provide tmux-aware mode; document Shift+click for passthrough |
+**Why it happens:**
+WSLg's PulseAudio bridge has documented issues with stream cork/uncork (pause/resume) after extended pauses. With two sinks feeding the same mixer, the resume is attempted for both, but the underlying cpal/ALSA layer sees this as a single stream. If the resume fails partway, one sink may resume while the other remains corked. There is no error returned -- the sink just produces silence.
 
-## Performance Traps
+**Prevention:**
+- Pause both sinks in the same call, resume both in the same call. Do not pause them in separate event handler branches.
+- After resume, add a brief verification delay (100-200ms), then check if both sinks are producing audio. If one is not, recreate that sink from the same OutputStream mixer and re-append its source.
+- The existing `_audio_data` pattern (keeping raw bytes for re-creation) should be replicated for ambient audio data. If resume fails, tear down and recreate the ambient sink from cached bytes.
+- Consider the existing PULSE_LATENCY_MSEC=150 setting -- this already provides buffer headroom. Verify that adding a second sink does not require increasing this further.
 
-Patterns that work at small scale but fail as usage grows.
+**Detection:**
+- After unpausing on WSL2, one channel plays but the other is silent
+- Issue only occurs after pauses > 5 seconds
+- More common under CPU load or after WSL2 has been idle
 
-| Trap | Symptoms | Prevention | When It Breaks |
-|------|----------|------------|----------------|
-| Rendering all list items to ratatui | Scrolling lag, high CPU during scroll | Virtual scrolling: only pass visible items + buffer to widget | >5k items in a single list |
-| Re-fetching library metadata on every view switch | View transitions take seconds, network spike | Cache metadata locally; invalidate on library update webhook | Any library >500 albums |
-| FFT/spectrum analysis on the render thread | Frame drops during audio visualization, choppy audio | Run FFT on dedicated thread, share results via atomic/channel | Always, even with small FFT windows |
-| No audio buffer pre-loading (loading next track on demand) | Gaps between tracks, perceived as broken gapless playback | Pre-buffer next track when current track reaches 80-90% | Any playlist/queue playback |
-| String allocations in render loop | GC pressure / allocator contention, gradual slowdown | Pre-allocate Spans/Lines, reuse buffers, use `Cow<str>` | Noticeable at 60fps with complex layouts |
-| Album art conversion on every frame | CPU spike when album art is visible, jerky scrolling | Convert album art to terminal representation once, cache the result | Any view showing album art |
+**Phase to address:** Phase 1 (ambient audio foundation), with testing in Phase 2 (integration). The resume verification should be designed into the architecture, not bolted on.
 
-## Security Mistakes
+**Confidence:** MEDIUM -- extrapolated from documented single-stream WSL2 resume issues. Two sinks may actually be better (single mixer stream) or worse (more complex state). Needs empirical validation.
 
-Domain-specific security issues beyond general application security.
+---
 
-| Mistake | Risk | Prevention |
-|---------|------|------------|
-| Storing Plex token in plaintext config file with world-readable permissions | Any local user can access the Plex account, stream/delete media | Store token with 600 permissions; use OS keyring (libsecret on Linux) when available; never log tokens |
-| Logging full API request URLs (which contain X-Plex-Token) | Token exposed in log files, crash reports | Strip token from logged URLs; use header-based auth rather than query params where possible |
-| Not validating Plex server TLS certificates | MITM attacks on local network, credential theft | Verify certificates; allow user opt-in for self-signed certs with explicit warning, never silently skip |
-| Exposing Plex server address/port in UI without user consent | Privacy leak if screen is shared/recorded | Mask server details by default; show friendly server name instead of IP:port |
+### Pitfall 6: Ambient Volume Default Too Loud, First Impression is Bad
 
-## UX Pitfalls
+**What goes wrong:**
+Developer sets ambient default volume to 0.5 (a "reasonable" default). User starts ambient for the first time. The ambient track is mastered at a different loudness than the main music. Combined, they sound muddy, distorted, or the ambient overpowers the music. First impression: "this feature sounds terrible." User turns off ambient and never uses it again.
 
-Common user experience mistakes in TUI music players.
+**Why it happens:**
+Different audio sources are mastered at wildly different loudness levels. A "rain sounds" ambient track may have constant -6dB RMS while music varies from -20dB to 0dB. There is no perceptual normalization in rodio. Additionally, the combined volume budget (Pitfall 1) means the ambient volume setting affects perceived main music volume even when it doesn't cause clipping.
 
-| Pitfall | User Impact | Better Approach |
-|---------|-------------|-----------------|
-| Vim keybindings that shadow essential music controls (e.g., `q` quits instead of queue, `p` pastes instead of pause) | Users accidentally quit during playback; muscle memory conflicts | Use vim-inspired navigation (hjkl, /, gg, G) but music-specific action keys (space=pause, enter=play, a=add to queue); make all bindings configurable |
-| No visual feedback during network operations | User thinks app is frozen when fetching from Plex | Show loading spinners/progress indicators for any operation >200ms; use async with visual feedback |
-| Blocking UI on search | Typing a search query freezes until results return | Debounce search input (300ms); show results incrementally; allow cancellation |
-| Audio visualizer dominates screen space | Core music controls (now playing, queue, library) are squeezed or hidden | Make visualizer optional and toggleable; default to minimal/off; never let it push essential info off-screen |
-| No indication of playback source/quality | User doesn't know if they're getting direct play (lossless) or transcoded (lossy) | Show codec, bitrate, and direct play/transcode status in the now-playing view |
-| Inconsistent behavior inside/outside tmux | Keys work differently, mouse behaves differently, colors look wrong | Detect tmux via `$TMUX` env var; adjust `$TERM` handling; test explicitly in tmux during development; document tmux-specific configuration |
-| Album art rendering breaks layout in some terminals | Garbled characters, misaligned columns, broken UI | Use Sixel/Kitty protocol with terminal capability detection; gracefully degrade to no art or ASCII art; never assume unicode/emoji width is consistent |
+**Consequences:**
+- Feature perceived as low quality on first use
+- Users do not realize they can adjust ambient volume separately
+- If ambient defaults mask music, users blame the app rather than adjusting settings
 
-## "Looks Done But Isn't" Checklist
+**Prevention:**
+- Default ambient volume should be LOW: 0.15-0.25 range. It is much easier for users to turn up a quiet ambient than to struggle with an overpowering one.
+- Show ambient volume prominently in the UI so users know it is adjustable.
+- Persist ambient volume separately in session state (like `saved_volume` is persisted for main).
+- Consider different volume step sizes for ambient (0.02 instead of 0.05) since ambient volume is more sensitive -- small changes have big perceptual impact.
 
-Things that appear complete but are missing critical pieces.
+**Detection:**
+- User feedback about ambient being "too loud" or "drowning out music"
+- Users disabling ambient feature after trying it once
 
-- [ ] **Authentication:** Often missing token refresh on 401 -- verify the app re-authenticates automatically when tokens expire
-- [ ] **Playback:** Often missing gapless playback -- verify no audible gap between consecutive tracks by pre-buffering the next track
-- [ ] **Playback:** Often missing timeline reporting -- verify Plex dashboard shows "Now Playing" during playback and play counts increment
-- [ ] **Library browsing:** Often missing pagination -- verify performance with a library of 10k+ tracks, not just 50 test tracks
-- [ ] **Search:** Often missing debouncing -- verify typing quickly doesn't fire 10 API calls; verify slow network doesn't freeze UI
-- [ ] **Terminal cleanup:** Often missing signal handler cleanup -- verify `kill -TERM <pid>` leaves terminal in clean state
-- [ ] **Terminal cleanup:** Often missing mouse tracking disable on exit -- verify no escape sequence garbage after exit
-- [ ] **Audio:** Often missing pause/resume reliability on WSL -- verify pausing for 30+ seconds and resuming works
-- [ ] **Queue:** Often missing queue persistence -- verify queue survives app restart (or explicitly document it doesn't)
-- [ ] **Keybindings:** Often missing tmux compatibility -- verify all keybindings work inside tmux, not just bare terminal
-- [ ] **Album art:** Often missing terminal capability detection -- verify album art degrades gracefully on terminals without Sixel/Kitty support
+**Phase to address:** Phase 2 (ambient UX polish) -- defaults and step sizes can be tuned after the core feature works.
 
-## Recovery Strategies
+**Confidence:** MEDIUM -- based on audio engineering principles and UX common sense. The specific default depends on the ambient content.
 
-When pitfalls occur despite prevention, how to recover.
+---
 
-| Pitfall | Recovery Cost | Recovery Steps |
-|---------|---------------|----------------|
-| WSL audio completely broken | MEDIUM | Implement Windows-side audio fallback (spawn mpv/ffplay on Windows, control from TUI); or switch to HTTP streaming to a local Windows player |
-| Plex token expired with no refresh logic | LOW | Add 401-intercept middleware that triggers re-auth flow; wrap all API calls in a retry-with-reauth helper |
-| UI lag from large library | MEDIUM | Add virtual scrolling layer between data and widget; requires refactoring list/table rendering but not full rewrite if data layer already supports pagination |
-| No timeline reporting (post-launch) | LOW | Add timeline update calls at play/pause/stop/seek points and a periodic timer; mostly additive, no architectural change needed |
-| Terminal state corruption on crash | LOW | Add panic hook and signal handlers; single focused change, testable in isolation |
-| Missing gapless playback | MEDIUM | Requires pre-buffering architecture; if audio plays track-by-track, need to add a decode-ahead pipeline. Easier if audio backend is abstracted. |
-| Keybinding conflicts discovered post-launch | LOW | Make keybindings configurable via config file; ship sensible defaults but let users remap everything |
+### Pitfall 7: `Sink::stop()` on Ambient Sink During Main Track Change
 
-## Pitfall-to-Phase Mapping
+**What goes wrong:**
+The existing `load_and_play()` calls `self.sink.stop()` then creates a fresh Sink via `Sink::connect_new()`. This is the documented workaround for rodio's "append blocks after stop" issue (#171). If the refactored code accidentally calls `stop()` on the ambient sink (or on a shared reference), the ambient track stops and the ambient sink becomes unusable. A new Sink must be created, but the ambient source data may not be readily available for re-append.
 
-How roadmap phases should address these pitfalls.
+**Why it happens:**
+In rodio, `Sink::stop()` is a one-way operation. A stopped Sink cannot accept new sources -- you must create a new Sink. The existing code creates a fresh Sink for each main track, which is correct. But if the ambient sink is inadvertently stopped (e.g., by a method that operates on "the player's sink" generically), the ambient track goes silent and cannot be restarted without recreating the sink and re-decoding the ambient audio.
 
-| Pitfall | Prevention Phase | Verification |
-|---------|------------------|--------------|
-| WSLg audio pause/resume failure | Phase 1: Foundation | PoC test: play, pause 30s, resume. Must work before building anything on top. |
-| Plex auth token lifecycle | Phase 1: Foundation | End-to-end test: fresh auth via PIN flow, token persistence, token expiry simulation (manual 401), re-auth |
-| Terminal state cleanup on crash/exit | Phase 1: Foundation | Test: send SIGTERM, SIGINT during playback; verify terminal state is clean |
-| Large library rendering lag | Phase 2: Library Browsing | Test with 10k+ track library; measure frame time during scrolling; must maintain <16ms per frame (60fps) |
-| Plex API rate limiting | Phase 2: Library Browsing | Test rapid browsing/searching; verify no 429 responses; implement request throttling |
-| Missing timeline reporting | Phase 3: Playback | Verify with Tautulli or Plex dashboard that now-playing, progress, and play counts update correctly |
-| Gapless playback gaps | Phase 3: Playback | Listen to albums with seamless track transitions (e.g., Pink Floyd, Radiohead); verify no audible gap |
-| Audio visualizer CPU overhead | Phase 4: Polish/Visualizer | Monitor CPU usage with visualizer on vs. off; must not cause audio dropout or frame drops |
-| Tmux keybinding conflicts | Phase 1: Foundation (design), Phase 4: Polish (verify) | Test all keybindings inside tmux with mouse mode on; document any unavoidable conflicts |
-| Album art rendering inconsistency | Phase 4: Polish | Test in multiple terminals (kitty, alacritty, gnome-terminal, Windows Terminal via WSL); verify graceful degradation |
-| Unicode/wide character layout breaks | Phase 2: Library Browsing | Test with tracks that have CJK characters, emoji, and long artist names; verify layout doesn't break |
+**Consequences:**
+- Ambient track silently stops when user changes main music track
+- No error message -- ambient just disappears
+- User must manually restart ambient after every track change
+
+**Prevention:**
+- Main track changes should ONLY call `stop()` on `main_sink`. The `ambient_sink` must be completely untouched by the main track change flow.
+- In the refactored `load_and_play()` method, explicitly name the sink: `self.main_sink.stop()`, not `self.sink.stop()`.
+- Keep ambient source bytes cached (like `_audio_data` for main). If ambient sink needs recreation for any reason, it can be rebuilt from cache.
+- Add an assertion or log in ambient code path that fires if `ambient_sink.empty()` returns true unexpectedly (detecting accidental stop).
+
+**Detection:**
+- Ambient goes silent every time a new main track starts
+- Ambient works fine until first track change, then disappears
+
+**Phase to address:** Phase 1 (ambient audio foundation) -- the sink isolation is part of the core architecture.
+
+**Confidence:** HIGH -- directly visible in the existing `load_and_play()` code which calls `self.sink.stop()`.
+
+---
+
+### Pitfall 8: Track Browsing UI State Conflicts with Playing State
+
+**What goes wrong:**
+Adding track browsing (for ambient track selection) introduces a second navigation context in the TUI. The existing app uses `track_state: ListState` for the main track list. If ambient tracks share the same list widget or the same navigation keybindings, scrolling through ambient tracks will move the main track selection cursor, or pressing Enter on an ambient track will try to play it as a main track.
+
+**Why it happens:**
+The current `App` has a single `view` state machine (Playlists -> Tracks -> Playing) and single `track_state`. Adding ambient browsing requires either a new view state, a modal/overlay, or a split-pane UI. Each approach has different implications for input handling. The `handle_key()` method currently dispatches based on `self.view`, and a new view state must be integrated without breaking existing navigation flows.
+
+**Consequences:**
+- Pressing Enter in ambient browser starts main playback of that track instead
+- Navigation keys (j/k) move wrong list when focus is ambiguous
+- Escape from ambient browser exits to wrong parent view
+- Selection cursor visual highlight appears in wrong list
+
+**Prevention:**
+- Add an explicit focus/context concept: `enum FocusContext { MainTracks, AmbientBrowser }`. Key handling checks focus before dispatching.
+- Use distinct keybindings for ambient browsing (e.g., `a` to open ambient browser, separate Enter handling when in ambient context).
+- Ambient track selection should use its OWN `ListState`, completely separate from `track_state`.
+- The `AppView` enum should gain a new variant (e.g., `AmbientBrowsing`) or use a sub-state within existing views.
+- Keep the state machine transitions documented. Draw the state diagram before implementing.
+
+**Detection:**
+- Wrong track plays when selecting from ambient browser
+- Navigation affects wrong list
+- Cannot return to correct view after ambient browsing
+
+**Phase to address:** Phase 2 (track browsing UI) -- this is the primary UI challenge of the browsing feature.
+
+**Confidence:** HIGH -- directly observable from the app.rs state machine design.
+
+---
+
+### Pitfall 9: WSL2 Audio Quality Degrades with Two Simultaneous Sinks
+
+**What goes wrong:**
+The existing PULSE_LATENCY_MSEC=150 and .asoundrc buffer tuning were calibrated for single-stream playback. Adding a second concurrent audio source (ambient) increases the audio processing load on the WSLg PulseAudio bridge. This may push the system past the buffer underrun threshold, reintroducing the crackling that the existing buffer tuning solved.
+
+**Why it happens:**
+WSLg's PulseAudio bridge runs with fixed resources. Two concurrent streams mean twice the sample data flowing through the bridge per unit time. The ALSA -> PulseAudio -> Windows audio path has limited buffer capacity, and the 150ms latency setting may not provide enough headroom for two streams. Additionally, rodio mixes internally before sending to the OS, so from PulseAudio's perspective it is still one stream -- but the mixing itself adds CPU overhead on the audio thread, which can cause scheduling jitter that triggers underruns.
+
+**Prevention:**
+- Test early: as the very first step of Phase 1, create two Sinks playing simultaneously on the existing OutputStream and listen for degradation compared to single-sink baseline.
+- If degradation occurs, try increasing PULSE_LATENCY_MSEC to 200 or 250. Music playback can tolerate up to 300ms latency without perceptible delay (there is no interactive component requiring low latency).
+- Monitor CPU usage of the audio thread. Rodio's mixer runs on a background thread -- if this thread is CPU-starved on WSL2, consider lowering the ambient track's sample rate (e.g., 22050 Hz for ambient vs 44100 Hz for main).
+- The .asoundrc buffer settings may need updating. The current v2 config uses PulseAudio defaults -- explicit `buffer_size` and `periods` settings might be needed.
+
+**Detection:**
+- Crackling appears after adding ambient that was not present with main-only playback
+- Crackling worsens under CPU load (compiling, other WSL2 processes)
+- Crackling resolves when ambient is muted (volume 0) but not when ambient sink exists at any volume
+
+**Phase to address:** Phase 1 (ambient audio foundation) -- must be validated before building the full feature. If two-sink audio quality is unacceptable on WSL2, the architecture must change (e.g., pre-mix ambient into main at the Source level instead of using separate Sinks).
+
+**Confidence:** MEDIUM -- extrapolated from existing WSL2 audio tuning. The fact that rodio mixes internally (sending one stream to PulseAudio) means this may be a non-issue. Needs empirical testing.
+
+---
+
+## Minor Pitfalls
+
+Issues that cause inconvenience or polish problems.
+
+---
+
+### Pitfall 10: Ambient Track Downloads Block the Event Loop
+
+**What goes wrong:**
+The existing download pattern uses `std::thread::spawn` with `reqwest::blocking` to download main tracks without blocking the TUI. If ambient track downloads reuse this pattern but are initiated at the same time as a main track download (e.g., user starts favorite playlist while ambient is loading), two blocking download threads run simultaneously. On slow connections, this halves bandwidth for each, making both feel slow. On fast connections, this is fine.
+
+**Prevention:**
+- Use the same download channel pattern (mpsc) but with distinct channels for main vs ambient downloads.
+- Consider prioritizing main track downloads over ambient (main track download blocks the Playing view transition, ambient can load in the background without blocking anything).
+- Add a "loading ambient..." indicator so users know why ambient has not started yet.
+
+**Phase to address:** Phase 2 (ambient download integration) -- after the core playback works with pre-loaded test audio.
+
+**Confidence:** MEDIUM -- depends on network conditions and user behavior patterns.
+
+---
+
+### Pitfall 11: Session Persistence Does Not Include Ambient State
+
+**What goes wrong:**
+The existing session persistence saves playlist, track index, volume, shuffle, and repeat mode. If ambient state (selected ambient track, ambient volume, whether ambient was playing) is not persisted, users lose their ambient setup every restart. Given that ambient is used "90% of the time," this becomes a major annoyance.
+
+**Prevention:**
+- Extend the `Session` struct with ambient fields: `ambient_track_url`, `ambient_volume`, `ambient_enabled`.
+- Use serde's `#[serde(default)]` on new fields so existing session.toml files remain compatible (new fields get defaults).
+- Save ambient state in the same `save_session_state()` call -- no separate file needed.
+- Restore ambient state in `restore_session()` -- but like main playback, do NOT auto-play ambient on restore. Let the user explicitly resume.
+
+**Phase to address:** Phase 3 (polish and persistence) -- after ambient playback and browsing work reliably.
+
+**Confidence:** HIGH -- directly observable gap in the current Session struct.
+
+---
+
+### Pitfall 12: Visualizer Only Shows Main Audio, Not Combined
+
+**What goes wrong:**
+The existing visualizer taps into the main audio source via `VisualizerSource`. When ambient audio is playing simultaneously, the visualizer only shows the main track's spectrum. Users may expect the visualizer to reflect "what they hear" (combined audio), leading to confusion when the visualizer seems to miss the ambient layer.
+
+**Prevention:**
+- Decide early: should the visualizer show main-only or combined? For a music player, main-only makes more sense (the visualizer represents the song, not the ambient background).
+- Document this decision in the UI (tooltip or help text).
+- If combined visualization is desired later, it requires tapping the mixer output rather than individual sink inputs -- this is architecturally different and should not be attempted in the initial implementation.
+
+**Phase to address:** Phase 3 (polish) -- this is a UX decision, not a technical blocker.
+
+**Confidence:** HIGH -- observable from the existing VisualizerSource architecture.
+
+---
+
+## Phase-Specific Warnings
+
+| Phase Topic | Likely Pitfall | Mitigation | Severity |
+|-------------|---------------|------------|----------|
+| Phase 1: Two-sink architecture | Pitfall 2 (OutputStream lifetime) | Single OutputStream, both sinks from same mixer | Critical |
+| Phase 1: Two-sink architecture | Pitfall 4 (breaking existing playback) | Rename sink -> main_sink first, review all references | Critical |
+| Phase 1: Ambient looping | Pitfall 3 (repeat_infinite memory leak) | Manual loop via empty() check + re-append | Critical |
+| Phase 1: Volume control | Pitfall 1 (mixer clipping) | Volume budget: main + ambient <= 1.0 | Critical |
+| Phase 1: WSL2 validation | Pitfall 9 (audio quality degradation) | Two-sink test before building features | Moderate |
+| Phase 1: Main track change | Pitfall 7 (accidental ambient stop) | Explicit main_sink.stop(), never touch ambient | Moderate |
+| Phase 2: Pause/resume | Pitfall 5 (desync on WSL2) | Resume both sinks together, verify both active | Moderate |
+| Phase 2: Track browsing UI | Pitfall 8 (UI state conflicts) | Separate ListState, explicit FocusContext | Moderate |
+| Phase 2: Volume defaults | Pitfall 6 (ambient too loud) | Default 0.15-0.25, fine-grained steps | Minor |
+| Phase 2: Concurrent downloads | Pitfall 10 (blocking event loop) | Separate channels, prioritize main | Minor |
+| Phase 3: Session persistence | Pitfall 11 (ambient state not saved) | Extend Session struct with serde defaults | Minor |
+| Phase 3: Visualizer | Pitfall 12 (main-only display) | Document decision, main-only is fine | Minor |
+
+---
+
+## Testing Approaches to Catch Issues Early
+
+### Smoke Test: Two-Sink Baseline (Do This FIRST)
+
+Before writing any feature code, validate that two sinks playing simultaneously on WSL2 produces acceptable audio quality:
+
+1. Create a minimal test: open one OutputStream, create two Sinks from its mixer
+2. Load a music file into Sink 1, a different file into Sink 2
+3. Set both to volume 0.5 (safe budget)
+4. Play for 60 seconds on WSL2
+5. Listen for: crackling, dropouts, one channel going silent
+6. If any issues: adjust PULSE_LATENCY_MSEC and .asoundrc before proceeding
+
+### Memory Stability Test
+
+1. Start ambient looping with chosen approach (manual re-append, not repeat_infinite)
+2. Monitor RSS every 30 seconds for 5 minutes
+3. RSS should be stable (within 1-2MB variation)
+4. If growing: the looping approach has a leak
+
+### Integration Regression Test
+
+After refactoring Player struct:
+1. All existing functionality works exactly as before (play, pause, seek, volume, next, prev, repeat, shuffle)
+2. No behavior change when ambient is not active
+3. Main track auto-advance still triggers correctly
+4. Session restore works with both old (no ambient) and new session files
+
+### Pause/Resume Stress Test (WSL2-specific)
+
+1. Play main + ambient simultaneously
+2. Pause for 1s, resume. Verify both play.
+3. Pause for 5s, resume. Verify both play.
+4. Pause for 30s, resume. Verify both play.
+5. Repeat 10 times. Count failures.
+
+---
 
 ## Sources
 
-- [WSLg audio breaks on pause/resume - GitHub Issue #1376](https://github.com/microsoft/wslg/issues/1376) -- MEDIUM confidence (open issue with known fix pending)
-- [WSLg extreme audio latency - GitHub Issue #607](https://github.com/microsoft/wslg/issues/607) -- HIGH confidence (multiple corroborating issues)
-- [WSLg sound stuttering - GitHub Issue #1257](https://github.com/microsoft/wslg/issues/1257) -- HIGH confidence
-- [WSLg choppy audio on Windows 10 - GitHub Issue #908](https://github.com/microsoft/wslg/issues/908) -- HIGH confidence
-- [Plex authentication forum thread](https://forums.plex.tv/t/authenticating-with-plex/609370) -- HIGH confidence (official Plex developer documentation)
-- [Plex token support article](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/) -- HIGH confidence (official)
-- [Plex direct play/transcode overview](https://support.plex.tv/articles/200430303-streaming-overview/) -- HIGH confidence (official)
-- [Plex API rate limit exceeded - Forum](https://forums.plex.tv/t/api-rate-limit-exceeded-status-429/886080) -- MEDIUM confidence (community reports)
-- [Ratatui Table performance with large datasets - Issue #1004](https://github.com/ratatui/ratatui/issues/1004) -- HIGH confidence (framework maintainer confirmed)
-- [Ratatui rendering best practices - Discussion #579](https://github.com/ratatui/ratatui/discussions/579) -- HIGH confidence (framework maintainer authored)
-- [Jellyfin-TUI issues (session management, large playlists)](https://github.com/dhonus/jellyfin-tui/issues) -- MEDIUM confidence (analogous project, not identical domain)
-- [Termusic audio backend issues and changelog](https://github.com/tramhao/termusic) -- MEDIUM confidence (Rust TUI music player with similar architecture)
-- [Tmux mouse mode FAQ](https://github.com/tmux/tmux/wiki/FAQ) -- HIGH confidence (official tmux documentation)
-- [Terminal Unicode rendering issues - Windows Terminal Discussion #13724](https://github.com/microsoft/terminal/discussions/13724) -- MEDIUM confidence (terminal-specific, cross-references needed)
-- [Plex large music library performance - Forum](https://forums.plex.tv/t/slow-library-performance-due-to-increasingly-growing-database/740511) -- MEDIUM confidence (community reports, multiple users)
-- [Cava audio visualizer CPU usage](https://github.com/karlstav/cava) -- MEDIUM confidence (analogous application)
-- [Terminal escape sequence cleanup - OpenCode Issue #6912](https://github.com/anomalyco/opencode/issues/6912) -- HIGH confidence (well-documented failure mode)
-- [Raw terminal input gotchas](https://viewsourcecode.org/snaptoken/kilo/03.rawInputAndOutput.html) -- HIGH confidence (authoritative tutorial)
-
----
-*Pitfalls research for: TUI Music Player with Plex Integration (TermTunes)*
-*Researched: 2026-02-08*
+- [rodio GitHub issue #673: repeat_infinite memory leak](https://github.com/RustAudio/rodio/issues/673) -- HIGH confidence
+- [rodio GitHub issue #340: clipping with set_volume](https://github.com/RustAudio/rodio/issues/340) -- HIGH confidence
+- [rodio GitHub issue #171: cannot restart stopped sink](https://github.com/RustAudio/rodio/issues/171) -- HIGH confidence
+- [rodio GitHub issue #330: OutputStream drop kills audio](https://github.com/RustAudio/rodio/issues/330) -- HIGH confidence
+- [rodio documentation: Source trait](https://docs.rs/rodio/latest/rodio/source/trait.Source.html) -- HIGH confidence
+- [rodio documentation: multiple sinks and mixer](https://docs.rs/rodio/latest/rodio/index.html) -- HIGH confidence
+- [WSLg GitHub issue #908: choppy audio](https://github.com/microsoft/wslg/issues/908) -- MEDIUM confidence
+- [WSLg GitHub issue #1257: sound stuttering](https://github.com/microsoft/wslg/issues/1257) -- MEDIUM confidence
+- [PulseAudio troubleshooting: buffer underruns](https://wiki.archlinux.org/title/PulseAudio/Troubleshooting) -- MEDIUM confidence
+- Existing TermTunes codebase analysis: `/home/jigsaw/src/termtunes/src/player.rs`, `/home/jigsaw/src/termtunes/src/app.rs`, `/home/jigsaw/src/termtunes/src/visualizer.rs` -- HIGH confidence

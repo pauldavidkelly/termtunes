@@ -1,218 +1,256 @@
-# Feature Research
+# Feature Research: Multi-Channel Audio (v1.1)
 
-**Domain:** TUI music player for Plex Media Server
-**Researched:** 2026-02-08
-**Confidence:** MEDIUM-HIGH
+**Domain:** Ambient track layering for TUI music player
+**Researched:** 2026-02-10
+**Confidence:** HIGH (codebase verified, rodio docs confirmed, ambient app ecosystem surveyed)
 
-## Feature Landscape
+## Context
 
-### Table Stakes (Users Expect These)
+TermTunes v1.0 plays a single audio channel (music from Plex playlists). v1.1 adds a
+second audio channel -- an ambient track that plays underneath the main music. The user
+case is deep work focus: lofi playlist playing, rain or forest sounds layered beneath it,
+independent volume controls so the ambient sits at 20-30% and the music at 70%.
 
-Features users assume exist. Missing these = product feels incomplete.
+This research covers ONLY multi-channel audio features, ambient track browsing/selection,
+and mixing controls. General player features (shuffle, repeat, favorites, etc.) are
+already built and documented in the v1.0 research.
 
-| Feature | Why Expected | Complexity | Notes |
-|---------|--------------|------------|-------|
-| Play/pause/stop | Every music player has this. Non-negotiable. | LOW | Single keybinding each. Must feel instant. |
-| Skip forward/back | Basic track navigation. All competitors have it. | LOW | Both next/previous track jumps. |
-| Playlist listing and selection | The entire product concept is playlist-based Plex playback. | MEDIUM | Requires Plex API integration for playlist fetch. Core navigation screen. |
-| Current track info display | Users need to know what is playing (artist, album, track name). Every TUI player shows this. | LOW | Plex API provides metadata. Display in a status region. |
-| Playback progress bar with time | cmus, ncmpcpp, spotify-tui, jellyfin-tui, kew all show elapsed/remaining time and a progress bar. Users expect visual time feedback. | LOW | Render a bar with elapsed/total. Update on a timer. |
-| Volume control | Every player has volume up/down. Keyboard-driven players use +/- keys universally. | LOW | Map to +/- keys. Control system or stream volume. |
-| Shuffle mode | Listed in PROJECT.md requirements. All playlist-based players support shuffle. | LOW | Randomize playlist order on toggle. |
-| Repeat/loop mode | All competitors offer at least repeat-all. Most offer repeat-one as well. | LOW | Cycle through: off, repeat-all, repeat-one. |
-| Seek within track | Users expect left/right arrow seeking. cmus, ncmpcpp, spotify-tui, kew, jellyfin-tui all support it. | LOW | +/-5s or +/-10s increments. Arrow keys or h/l in vim mode. |
-| Vim-style keybindings | Stated in PROJECT.md. j/k navigation, slash-search, etc. Core to the target user profile. | MEDIUM | Must feel native to vim users. j/k/g/G/ctrl-d/ctrl-u for navigation. Space for play/pause. |
-| Keyboard-only operation | TUI players are keyboard-driven by definition. Mouse is optional at best. | LOW | Design all interactions around keyboard input from day one. |
-| Responsive terminal resize | TUI apps must handle terminal resize gracefully. Tmux panes get resized constantly. | MEDIUM | Re-render layout on SIGWINCH. Test in small pane sizes (e.g., 40x15). |
+## Existing Architecture (Constraints)
 
-### Differentiators (Competitive Advantage)
+Before detailing features, here is what already exists and constrains design:
 
-Features that set the product apart. Not required, but valuable.
+- **Audio backend:** rodio 0.21 with symphonia-all. Single `OutputStream` + single `Sink`.
+- **Player struct:** Owns `_stream: OutputStream` and `sink: Sink`. One track at a time.
+- **Volume:** `saved_volume: f32` on App, applied to the single Sink. +/- keys step by 0.05.
+- **Download model:** Track bytes downloaded to memory via `reqwest::blocking`, decoded from
+  `Cursor<Vec<u8>>`, appended to Sink. One download at a time via mpsc channel.
+- **Visualizer:** Wraps the source in `VisualizerSource` that taps samples for FFT.
+- **UI:** ratatui vertical layout: main content (list) + optional visualizer + player bar.
+- **Plex API:** Currently only fetches playlists and playlist tracks. No library browsing.
 
-| Feature | Value Proposition | Complexity | Notes |
-|---------|-------------------|------------|-------|
-| Favorite playlists with number keybindings (1-9) | Instant playlist switching without navigating. No competitor does this. Matches the "background music while coding" use case -- press 2 for ambient, 3 for jazz, done. | LOW | Map 1-9 to stored playlist IDs. Config file for mapping. This is TermTunes' killer feature. |
-| Toggleable audio visualizer | Terminal aesthetic that makes the player feel alive. kew, ncmpcpp, musikcube, plex-audio-btop-tui all have visualizers. Toggleable means it is not distracting during work. | HIGH | Requires audio stream analysis (FFT). Consider using CAVA protocol or similar. Toggle with a single key (v). |
-| Tmux status bar integration | Show "now playing" in tmux status line so user sees track info even when focused on another pane. No Plex TUI does this. Directly serves the "no context switching" core value. | LOW | Write current track info to a file or expose via tmux display. A tmux plugin or simple script reads it. |
-| Plex-native integration | Unlike generic players, TermTunes speaks Plex natively. No MPD middleman, no Spotify account. Direct Plex API for playlists and streaming. Fills a gap -- very few Plex TUI music players exist (plex-audio-btop-tui is the only real one, and it is macOS-focused). | MEDIUM | Plex API for auth, library, playlists, streaming. Well-documented via python-plexapi and plexapi.dev. |
-| Minimal resource footprint | Runs in a tmux pane alongside nvim, compilers, etc. Must not hog CPU/memory. Competitors like cmus pride themselves on being lightweight. | LOW | Choose efficient runtime. Avoid Electron-level overhead. |
-| Compact layout for small panes | Designed to work well in a narrow tmux pane (e.g., 30-40 columns). Most TUI players assume full terminal width. | MEDIUM | Responsive layout that degrades gracefully. Hide non-essential elements in small panes. |
-| Session persistence / resume | Remember last playing playlist and position across restarts. When user opens a new tmux session, music picks up where it left off. | MEDIUM | Persist state to a local file. Load on startup. |
-| MPRIS integration | Allows controlling TermTunes via media keys, playerctl, and other standard Linux media controls. jellyfin-tui, termusic, kew all support MPRIS. | MEDIUM | Implement org.mpris.MediaPlayer2 D-Bus interface. Standard on Linux. Not available on WSL without extra setup -- note as limitation. |
-| Gapless playback | Smooth transitions between tracks in a playlist. Plexamp's "Sweet Fades" are beloved. cmus, musikcube, kew all support gapless. Matters for ambient/mix playlists. | HIGH | Requires audio backend that supports pre-buffering next track. Depends on audio library choice. |
-| Synced lyrics display | jellyfin-tui, plex-audio-btop-tui, and kew support lyrics. Plex stores lyrics metadata. Nice for the occasional focused listen. | MEDIUM | Fetch lyrics from Plex metadata or LRCLIB API. Display in a toggleable panel. Lower priority -- user primarily listens to background music. |
+**Key rodio fact (verified via docs.rs):** Multiple Sinks can be created from the same
+`OutputStream.mixer()`. All Sinks mix automatically before output. Each Sink has independent
+`set_volume()`. This is the foundation for the ambient channel -- a second Sink on the
+same OutputStream, with its own volume control.
 
-### Anti-Features (Commonly Requested, Often Problematic)
+## Table Stakes
 
-Features that seem good but create problems. Explicitly do NOT build these.
+Features users expect from any dual-channel / ambient mixing system. Missing these
+makes the feature feel broken.
 
-| Feature | Why Requested | Why Problematic | Alternative |
-|---------|---------------|-----------------|-------------|
-| Full library browsing (artist/album/track tree) | Users of cmus/ncmpcpp expect library browsing. | Massively increases scope. TermTunes is playlist-focused, not a library browser. Plex has 98k+ track libraries -- browsing that in a TUI is a separate product. The core value is "pick a playlist and work." | Plex web UI or Plexamp for library browsing. TermTunes shows playlists only. |
-| Manual queue building | spotify-tui and jellyfin-tui have queue management. | Adds significant UI complexity (queue view, reorder, add/remove). Contradicts the "simple playlist playback" design. Users who want queues want a different product. | Play the playlist as-is. Shuffle is the only queue manipulation needed. |
-| Smart recommendations / radio / auto-mix | Plexamp has Sonic Adventure, radio stations, AI-generated playlists. | Requires complex Plex API features or ML. Far outside scope. Users already curate playlists in Plex. | Rely on Plex's existing playlist curation. Users create playlists in Plexamp/web UI. |
-| Crossfade / audio effects / EQ | Plexamp has 7-band EQ and Sweet Fades. Audiophile users request this. | Significant audio processing complexity. Adds latency. Most terminal users just want playback, not audio engineering. | If users want EQ, they configure PulseAudio/PipeWire system-wide. Not TermTunes' job. |
-| Mouse support | Some TUI apps support mouse clicks. | Target user explicitly does not use mouse (vim power user with vim-tmux). Mouse handling adds complexity and creates ambiguity in event handling. | Keyboard-only design. Document keybindings clearly. |
-| Tag editing | termusic and ncmpcpp have tag editors. | Modifying Plex library metadata from a terminal player is dangerous. Plex has its own metadata management. | Use Plex web UI for metadata editing. |
-| Downloading / offline mode | jellyfin-tui supports offline caching. | Plex already handles transcoding and streaming. Downloading duplicates Plex functionality and creates storage management headaches. | Stream from Plex. If network is down, music is unavailable -- this is acceptable for the use case. |
-| Multi-server / multi-source | Support multiple Plex servers, or also play local files. | Adds configuration complexity and UI branching. One server is the expected use case. | Configure one Plex server. If user switches servers, update config. |
-| Discord Rich Presence | jellyfin-tui supports it. | Niche feature. Adds a dependency. Target user is working, not socializing. | Omit entirely. |
-| Last.fm scrobbling | jellyfin-tui and many GUI players support it. | Adds external API dependency and auth flow. Nice-to-have but not core. | Consider as a v2+ feature if requested. Not MVP. |
+| Feature | Why Expected | Complexity | Dependencies | Notes |
+|---------|--------------|------------|--------------|-------|
+| Second audio channel (ambient Sink) | The entire point of v1.1. Without a second independently controlled audio stream, there is no ambient layer. Every ambient mixer app (Moodist, myNoise, Noisli, Coffitivity) provides independent sound streams. | MEDIUM | Extends `Player` struct with second Sink | rodio supports this natively -- create second `Sink::connect_new(stream.mixer())`. Each Sink has independent volume. Main complexity is lifecycle management. |
+| Independent volume controls | Users of Moodist, myNoise, Noisli all expect per-channel volume sliders. The whole value is tuning the mix ratio. Without independent volume, the channels are useless -- you cannot make rain quiet under loud music. | LOW | Requires second Sink exists | rodio `Sink::set_volume()` on each Sink independently. Need new keybindings for ambient volume vs main volume. |
+| Ambient mute/unmute toggle | Every ambient app has a quick way to silence the ambient without stopping it. When a coworker starts talking, you mute the rain, keep the music. When the call ends, unmute -- rain resumes from where it was. | LOW | Requires second Sink exists | `Sink::pause()` / `Sink::play()` on the ambient Sink. Single keybinding toggle. |
+| Ambient track selection from Plex playlists | The user needs to pick an ambient track from somewhere. TermTunes is Plex-native, so ambient tracks should come from Plex playlists too. The user likely has an "Ambient" or "Nature Sounds" playlist on their Plex server. | MEDIUM | Existing playlist fetch infrastructure | Reuse the existing `PlexClient::fetch_playlists()` + `fetch_tracks()` flow. UI needs a way to browse and select a track specifically for the ambient channel. |
+| Ambient track looping | Ambient sounds must loop seamlessly. A 3-minute rain track that stops after 3 minutes is useless -- the whole point is continuous background texture. Every ambient app (Moodist, myNoise, Ambient Mixer, Noisli) loops sounds infinitely. | MEDIUM | Requires ambient Sink management | rodio Sink is sequential -- when it empties, re-append the same source. Detect `sink.empty()` in the event loop and re-decode from cached bytes. The main player already caches `_audio_data` for `replay_current()`, same pattern applies. |
+| Persist ambient state across session | If the user has rain at 25% volume playing under their music, restarts TermTunes, and the ambient is gone, that is a broken experience. Session persistence already exists for main channel (playlist, track, volume, shuffle, repeat). Ambient state must be included. | LOW | Extends `Session` struct | Add `ambient_playlist_key`, `ambient_track_index`, `ambient_volume`, `ambient_enabled` to session.toml. Same save/restore pattern as existing session. |
+| Visual indication of ambient status | The user needs to see at a glance: is ambient playing? What track? What volume? Without this, the ambient layer is invisible and confusing. All ambient apps show what sounds are active and their levels. | LOW | Extends player bar UI | Add ambient info to the player bar (line 3 or a new line). Show track name + volume % + muted indicator. |
+
+## Differentiators
+
+Features that go beyond the basics and make the ambient layer genuinely useful for
+the deep work use case. Not strictly required, but significantly improve the experience.
+
+| Feature | Value Proposition | Complexity | Dependencies | Notes |
+|---------|-------------------|------------|--------------|-------|
+| Ambient playlist assignment to hotkey (0 key) | Main music uses 1-9 for favorite playlists. Ambient could use the 0 key (or a modifier like `a1`-`a9`) for favorite ambient playlists. One-keypress ambient activation matches the TermTunes philosophy of "press a key, get your environment." | LOW | Extends favorites config | Reuse the favorite playlist infrastructure. Add an `ambient_favorites` section to config.toml. Keeps the "press key, done" workflow. |
+| Plex library browsing for ambient track selection | Users may not have ambient sounds organized as playlists. They might have an "Ambient" music library section with albums like "Rain Sounds," "Forest," "Ocean." Library-level browsing (section -> artist/album -> track) gives access to the full ambient library. | HIGH | New Plex API endpoints (`/library/sections/{id}/all`, type filters) | This is the biggest new Plex API surface area. Plex supports `GET /library/sections/{id}/all` for artists, `/albums` for albums, and track-level browsing. Adds new UI views (library browser). Consider deferring to v1.2 if playlist-based selection is sufficient. |
+| Master volume control | A single key to scale both channels proportionally. If main is at 70% and ambient is at 25%, master volume down should reduce both while preserving the ratio. Standard in mixing consoles and DAWs. | MEDIUM | Requires tracking both volumes | Implement as a multiplier applied to both Sinks. Existing +/- keys become master, new keys for per-channel. Or: existing +/- stay on main, new keys for ambient, and a third pair for master. Need to decide keybinding scheme carefully. |
+| Crossfade on ambient track change | When switching ambient tracks (e.g., rain to ocean), an abrupt cut is jarring. A 1-2 second crossfade between old and new ambient track creates a smooth transition. Ambient Mixer and myNoise both fade between sounds. | HIGH | Requires managing two ambient Sinks temporarily during crossfade | rodio has no built-in crossfade between Sinks. Would need to manually ramp volume down on old Sink while ramping up on new Sink over ~1-2 seconds. Can use the event loop tick (100ms) to step volume. Complex but doable. |
+| Ambient-only mode (no music, just ambient) | Sometimes the user just wants rain sounds with no music. The ambient channel should work independently. Moodist, Noisli, and myNoise all work without any "main" content. | LOW | Ambient Sink is independent of main Sink | This should work naturally if the two Sinks are independent. Main channel can be empty/stopped while ambient plays. Just need to ensure the UI handles this state gracefully. |
+| Quick mix presets | Save named preset mixes (e.g., "Deep Work" = lofi playlist + rain at 25%, "Reading" = classical playlist + fireplace at 15%). Recall with a keybinding or command. | MEDIUM | Extends config with named presets | Useful for the "different moods for different tasks" workflow. Store as TOML entries: playlist key, ambient track key, main volume, ambient volume. Could map to function keys or a command palette. |
+| Ambient track search/filter | When browsing ambient tracks, a `/` search (vim-style) to filter by name. With hundreds of ambient tracks, scrolling through a list is slow. | LOW | Extends list navigation | The same search/filter pattern that could apply to track lists generally. Type `/rain` to filter to tracks containing "rain." Standard vim pattern. |
+
+## Anti-Features
+
+Features that seem useful for multi-channel mixing but would be actively harmful for
+this use case. Do NOT build these.
+
+| Anti-Feature | Why It Seems Useful | Why Avoid | What to Do Instead |
+|--------------|--------------------|-----------|--------------------|
+| More than 2 channels | Ambient mixer apps support 8+ simultaneous sounds (rain + thunder + birds + fire). More channels = more immersive. | Exponential complexity in UI, keybindings, and volume management. TUI has limited screen space. The target user wants exactly 2 layers: music + one ambient texture. If they need complex soundscapes, they should use Moodist or myNoise in a browser tab alongside TermTunes. | Hard-cap at 2 channels: main music + one ambient. Simple, focused, keyboard-friendly. |
+| Audio effects / processing on ambient | Reverb, EQ, spatial panning on the ambient track. myNoise has stereo width control. | Turns TermTunes into a DAW. rodio does not have built-in effects beyond volume. Adding audio processing requires either custom Source wrappers or external crates. Massive scope increase for minimal value -- the ambient tracks should already be mixed properly. | Use pre-mixed ambient tracks. PulseAudio/PipeWire system EQ if needed. |
+| Real-time ambient generation | Generate rain/white noise/brown noise procedurally instead of playing files. Moodist and Noisli generate sounds algorithmically. | Requires implementing audio synthesis. Very different from file playback. Adds a completely new code path. The user already has ambient sounds in their Plex library. | Play ambient files from Plex. If user wants generated noise, they can run a separate tool (`sox play -n synth brownoise`). |
+| Ambient track playlists with auto-advance | Play through a sequence of ambient tracks (rain for 30 min, then ocean, then forest). | The whole point of ambient is continuity. Auto-advancing ambient tracks is jarring. The user picks one ambient texture and leaves it. If they want variety, they change it manually. | Single ambient track with infinite loop. User changes manually when they want a different texture. |
+| Volume curves / ducking | Automatically lower music volume when ambient gets louder, or duck ambient during track transitions. Standard in radio/podcast production. | Complex audio routing. Requires real-time analysis of both channels. Over-engineering for the use case. The user sets their preferred ratio once and leaves it. | Let the user set a static volume ratio. Trust them to adjust when they want to. |
+| Ambient timer / sleep timer | Play ambient for N minutes then fade out. Moodist and Noisli have sleep timers. | TermTunes is for focus during work, not for falling asleep. The ambient should play as long as the user is working. Adding timers adds UI complexity for a use case that does not match the product. | Ambient plays until explicitly stopped or TermTunes exits. |
 
 ## Feature Dependencies
 
 ```
-[Plex API Connection]
-    +-- requires --> [Authentication/Token]
-    +-- enables --> [Playlist Listing]
-                       +-- enables --> [Playlist Selection & Playback]
-                                          +-- enables --> [Track Info Display]
-                                          +-- enables --> [Progress Bar / Time]
-                                          +-- enables --> [Skip Forward/Back]
-                                          +-- enables --> [Seek Within Track]
-                                          +-- enables --> [Shuffle Mode]
-                                          +-- enables --> [Repeat Mode]
-                       +-- enables --> [Favorite Playlist Keybindings]
+[Existing v1.0 Infrastructure]
+    +-- OutputStream (already created in Player::new())
+        +-- enables --> [Ambient Sink] (second Sink::connect_new on same mixer)
 
-[Audio Backend]
-    +-- requires --> [Audio Output Setup (ALSA/PulseAudio/PipeWire)]
-    +-- enables --> [Volume Control]
-    +-- enables --> [Playback Controls]
-    +-- enables --> [Audio Visualizer] (requires audio stream/FFT data)
-    +-- enables --> [Gapless Playback] (requires pre-buffering support)
+[Ambient Sink]
+    +-- enables --> [Independent Volume Control]
+    +-- enables --> [Ambient Mute/Unmute]
+    +-- enables --> [Ambient Track Looping] (re-append source when Sink empties)
+    +-- enables --> [Ambient-Only Mode] (naturally works if main is stopped)
+    +-- enables --> [Visual Ambient Status] (read ambient Sink state for UI)
 
-[TUI Framework]
-    +-- enables --> [Vim Keybindings]
-    +-- enables --> [Track Info Display]
-    +-- enables --> [Progress Bar]
-    +-- enables --> [Responsive Resize]
-    +-- enables --> [Visualizer Rendering]
-    +-- enables --> [Lyrics Panel]
+[Ambient Track Selection]
+    +-- requires --> [Plex Playlist Fetch] (already exists)
+    +-- OR requires --> [Plex Library Browse] (NEW - high complexity)
+    +-- enables --> [Ambient Track Download] (same download_track pattern)
+    +-- enables --> [Ambient Favorite Hotkeys] (extends config)
 
-[Playback State]
-    +-- enables --> [Tmux Status Bar Integration]
-    +-- enables --> [MPRIS Integration]
-    +-- enables --> [Session Persistence]
+[Ambient State Persistence]
+    +-- requires --> [Ambient Sink] (need state to persist)
+    +-- requires --> [Session Infrastructure] (already exists)
+    +-- extends --> session.toml with ambient fields
+
+[UI Updates]
+    +-- requires --> [Ambient Sink] (need state to display)
+    +-- extends --> Player bar with ambient status line
+    +-- extends --> Keybinding help text
+    +-- extends --> Tmux now-playing file (optionally include ambient info)
 ```
 
-### Dependency Notes
+### Key Dependency Chain
 
-- **Playlist Playback requires Plex API Connection:** Cannot play anything without authenticating and fetching playlist data from Plex.
-- **Audio Visualizer requires Audio Backend:** FFT analysis depends on having access to the audio stream or system audio data.
-- **Favorite Playlist Keybindings require Playlist Listing:** Must know available playlists before mapping them to keys.
-- **Gapless Playback requires Audio Backend with pre-buffering:** Not all audio libraries support this natively. Audio backend choice constrains this feature.
-- **MPRIS requires D-Bus:** Works on native Linux. May not work on WSL without extra configuration -- document as known limitation.
-- **Tmux Status Bar integration requires Playback State:** Needs a way to export "now playing" info for tmux to consume.
+The critical path is:
 
-## MVP Definition
+1. **Ambient Sink creation** -- foundation for everything else
+2. **Ambient track selection UI** -- user needs a way to pick a track
+3. **Ambient track download + playback** -- actually play the selected track
+4. **Ambient looping** -- keep it playing continuously
+5. **Volume controls + UI feedback** -- user can tune the mix
+6. **Session persistence** -- remember state across restarts
 
-### Launch With (v1)
+Steps 1-4 are sequential dependencies. Steps 5-6 can be done in parallel with 3-4.
 
-Minimum viable product -- what is needed to validate the concept of "playlist music in a tmux pane."
+## Feature Categories for Requirements Organization
 
-- [ ] Plex authentication (token-based) -- gate to everything else
-- [ ] Playlist listing from Plex server -- the main navigation screen
-- [ ] Select and play a playlist -- core loop
-- [ ] Play/pause/stop -- basic playback control
-- [ ] Skip forward/back -- track navigation
-- [ ] Shuffle mode -- essential for background listening
-- [ ] Current track info (artist, album, track) -- know what is playing
-- [ ] Playback progress bar with time -- visual feedback
-- [ ] Volume control (+/-) -- basic necessity
-- [ ] Vim keybindings (j/k/enter/space/q) -- core UX commitment
-- [ ] Favorite playlist keybindings (1-9) -- the killer differentiator, include from day one
+Based on the dependency analysis, features group into these natural categories:
 
-### Add After Validation (v1.x)
+### Category 1: Ambient Audio Engine
+Core audio infrastructure for the second channel.
+- Second Sink creation and lifecycle management
+- Ambient track loading, decoding, and playback
+- Ambient track looping (auto-replay when finished)
+- Independent volume control (set_volume on ambient Sink)
+- Ambient pause/resume (mute toggle)
 
-Features to add once core playback is solid and daily-driveable.
+### Category 2: Ambient Track Selection
+How the user browses and picks an ambient track.
+- Browse Plex playlists for ambient track selection (reuse existing flow)
+- Ambient track browsing UI (new view or modal overlay)
+- Ambient favorite hotkey assignment and activation
+- (Deferred) Plex library-level browsing for ambient tracks
 
-- [ ] Seek within track (arrow keys or h/l) -- add when playback is stable
-- [ ] Repeat mode (off/all/one) -- straightforward addition
-- [ ] Toggleable audio visualizer -- the "wow factor" feature, add when audio backend is proven
-- [ ] Tmux status bar integration -- export now-playing for tmux status line
-- [ ] Responsive layout for small panes -- polish for real tmux usage
-- [ ] Session persistence (remember last playlist/position) -- quality of life
+### Category 3: Mixing Controls & Keybindings
+Keyboard interface for controlling the mix.
+- Ambient volume up/down keybindings
+- Ambient mute/unmute toggle keybinding
+- Main volume keybindings (existing, may need disambiguation)
+- (Optional) Master volume keybinding
 
-### Future Consideration (v2+)
+### Category 4: UI & Status Display
+Visual feedback for the ambient layer.
+- Ambient status in player bar (track name, volume, playing/paused)
+- Updated keybinding help text
+- Tmux now-playing file update (include ambient track info)
+- Narrow-mode handling for ambient status
 
-Features to defer until product-market fit is established and core is rock-solid.
+### Category 5: State Persistence
+Remember ambient configuration across sessions.
+- Ambient fields in session.toml
+- Save ambient state on exit
+- Restore ambient state on startup
+- Ambient favorite playlists in config.toml
 
-- [ ] MPRIS integration -- nice for media key control, but not blocking
-- [ ] Gapless playback -- requires audio backend maturity
-- [ ] Synced lyrics display -- nice-to-have for focused listening sessions
-- [ ] Last.fm scrobbling -- only if users request it
-- [ ] Search/filter within playlists -- useful for large playlists
+## Keybinding Design Considerations
 
-## Feature Prioritization Matrix
+The existing keybinding space is:
 
-| Feature | User Value | Implementation Cost | Priority |
-|---------|------------|---------------------|----------|
-| Plex auth + playlist listing | HIGH | MEDIUM | P1 |
-| Play/pause/stop/skip | HIGH | LOW | P1 |
-| Current track info display | HIGH | LOW | P1 |
-| Progress bar with time | HIGH | LOW | P1 |
-| Volume control | HIGH | LOW | P1 |
-| Shuffle mode | HIGH | LOW | P1 |
-| Vim keybindings | HIGH | MEDIUM | P1 |
-| Favorite playlist keybindings (1-9) | HIGH | LOW | P1 |
-| Seek within track | MEDIUM | LOW | P2 |
-| Repeat mode | MEDIUM | LOW | P2 |
-| Audio visualizer (toggleable) | MEDIUM | HIGH | P2 |
-| Tmux status bar integration | MEDIUM | LOW | P2 |
-| Responsive resize / small panes | MEDIUM | MEDIUM | P2 |
-| Session persistence | MEDIUM | LOW | P2 |
-| MPRIS integration | LOW | MEDIUM | P3 |
-| Gapless playback | LOW | HIGH | P3 |
-| Synced lyrics | LOW | MEDIUM | P3 |
-| Last.fm scrobbling | LOW | MEDIUM | P3 |
-| Playlist search/filter | LOW | LOW | P3 |
+| Key | Current Function |
+|-----|-----------------|
+| `j/k` | Navigate up/down |
+| `Enter` | Select item |
+| `Space` | Play/pause (main) |
+| `+/=` | Volume up (main) |
+| `-/_` | Volume down (main) |
+| `n/>` | Next track |
+| `N/<` | Previous track |
+| `h/l` | Seek backward/forward |
+| `s` | Toggle shuffle |
+| `r` | Toggle repeat |
+| `v` | Toggle visualizer |
+| `f` | Assign favorite |
+| `1-9` | Play favorite |
+| `q` | Quit |
+| `Esc` | Go back |
 
-**Priority key:**
-- P1: Must have for launch
-- P2: Should have, add when possible
-- P3: Nice to have, future consideration
+**Recommended ambient keybinding scheme (needs validation in requirements):**
 
-## Competitor Feature Analysis
+| Key | Proposed Function | Rationale |
+|-----|-------------------|-----------|
+| `a` | Enter ambient mode / open ambient track browser | Mnemonic: "a" for ambient. Currently unused. |
+| `m` | Mute/unmute ambient | Mnemonic: "m" for mute. Currently unused. |
+| `[` | Ambient volume down | Bracket keys are adjacent to +/- on keyboard. Creates visual parallel: +/- for main, [/] for ambient. |
+| `]` | Ambient volume up | Same rationale as `[`. |
+| `0` | Play favorite ambient | Extends the 1-9 favorite system. 0 is "the other channel." |
 
-| Feature | jellyfin-tui | spotify-tui | kew | cmus | ncmpcpp | musikcube | plex-audio-btop-tui | **TermTunes Plan** |
-|---------|-------------|-------------|-----|------|---------|-----------|--------------------|--------------------|
-| Playback controls | Yes | Yes | Yes | Yes | Yes | Yes | Yes | **P1** |
-| Library browsing | Full | Full | Yes | Yes | Yes | Yes | Yes | **No -- playlist only** |
-| Queue management | Double queue | Yes | Yes | Playlist | Yes | Yes | No | **No -- by design** |
-| Vim keybindings | Yes | Partial | Yes | Vi-native | Configurable | No | No | **P1 -- native** |
-| Visualizer | No | Audio analysis | Yes | No | Spectrum/wave | Yes | Waveform | **P2** |
-| Album art | Sixel | No | Sixel/ASCII | No | No (with timg hack) | No | Pixelated | **No -- too complex for small panes** |
-| Lyrics | Synced | No | LRC files | No | Fetched | No | Synced | **P3** |
-| MPRIS | Yes | N/A | Yes | Partial | Via MPD | No | No | **P3** |
-| Gapless playback | Unknown | N/A (Spotify handles) | Yes | Yes | Via MPD | Yes | Unknown | **P3** |
-| Shuffle/repeat | Yes | Yes | Yes | Yes | Yes | Yes | Unknown | **P1** |
-| Seek | Yes | Yes | Yes | Yes | Yes | Unknown | Yes | **P2** |
-| Offline/download | Yes | No | N/A | N/A | N/A | N/A | No | **No** |
-| Scrobbling | Last.fm | N/A | No | Via plugin | No | No | No | **No (v2+ maybe)** |
-| Favorite quick-keys | No | No | Favorites list | No | No | No | No | **P1 -- unique** |
-| Tmux integration | No | No | No | No | No | No | No | **P2 -- unique** |
-| Small pane support | No | No | No | No | No | No | No | **P2 -- unique** |
+This scheme uses only currently-unbound keys. The `a` key as an entry point to ambient
+browsing keeps the main flow uncluttered -- user presses `a`, sees ambient track selection,
+picks a track, presses `Esc` to return to the main view with ambient now playing.
+
+## Complexity Assessment Summary
+
+| Feature | Complexity | Rationale |
+|---------|------------|-----------|
+| Second Sink + independent volume | LOW | rodio natively supports this. ~50 lines of code to add to Player. |
+| Ambient mute/unmute | LOW | Single method call: `sink.pause()` / `sink.play()`. |
+| Ambient track download + play | LOW | Identical pattern to main track: download bytes, decode, append to Sink. |
+| Ambient looping | MEDIUM | Need event loop logic to detect empty Sink and re-append. Must handle edge cases (track decoding failure on loop, concurrent download). |
+| Ambient track selection UI | MEDIUM | New browsing flow within the TUI. Need a new AppView state or modal. Must show playlists, then tracks, for the ambient channel specifically. |
+| Session persistence for ambient | LOW | Add 4 fields to Session struct, extend save/restore. Pattern already established. |
+| Player bar ambient status | LOW | Add one Line of spans to the player bar rendering. |
+| Ambient favorite hotkeys | LOW | Same infrastructure as existing favorites, different config key. |
+| Plex library browsing | HIGH | New API surface (sections, artists, albums, tracks). New UI views. Significant scope. Recommend deferring. |
+| Crossfade between ambient tracks | HIGH | Manual volume ramping across event loop ticks. Temporary dual-Sink management. Edge cases with rapid switching. Recommend deferring. |
+| Master volume control | MEDIUM | Need to track a master multiplier and apply to both Sinks. Adds a third volume concept to the UI. |
+
+## MVP Recommendation for v1.1
+
+### Must Have (v1.1 launch)
+
+1. **Ambient Sink with independent volume** -- the core feature
+2. **Ambient track selection from Plex playlists** -- user must be able to pick a track
+3. **Ambient looping** -- ambient must loop forever
+4. **Ambient mute/unmute** -- quick toggle
+5. **Ambient volume controls** -- independent of main volume
+6. **Ambient status in player bar** -- user needs visual feedback
+7. **Ambient session persistence** -- state survives restarts
+
+### Defer (v1.2+)
+
+- Plex library browsing (use playlists for now, covers 90% of the use case)
+- Crossfade between ambient tracks (abrupt cut is acceptable for v1.1)
+- Master volume control (user can adjust channels independently)
+- Quick mix presets (nice-to-have, not blocking)
+- Ambient track search/filter (useful once track lists get long)
 
 ## Sources
 
-- [termusic - Rust TUI music player](https://github.com/tramhao/termusic) -- album art protocols, backend options
-- [jellyfin-tui - Jellyfin terminal client](https://github.com/dhonus/jellyfin-tui) -- most feature-rich media server TUI, key reference for server-backed TUI player patterns
-- [spotify-tui - Spotify terminal client](https://github.com/Rigellute/spotify-tui) -- popular Rust TUI player, keybinding conventions, audio analysis
-- [spotify-player - Spotify with full feature parity](https://github.com/aome510/spotify-player) -- streaming architecture, fuzzy search, image rendering
-- [kew - Terminal music player](https://github.com/ravachol/kew) -- sixel art, visualizer, LRC lyrics, favorites, clean keybinding model
-- [plex-audio-btop-tui - Plex audio TUI](https://github.com/MacsInSpace/plex-audio-btop-tui) -- direct competitor, Plex API patterns, waveform viz, lyrics
-- [Plex-TUI](https://github.com/keegan/Plex-TUI) -- another Plex TUI attempt
-- [cmus - C* Music Player](https://cmus.github.io/) -- vi-style keybindings, lightweight, gapless playback
-- [ncmpcpp - NCurses MPD client](https://rybczak.net/ncmpcpp/) -- visualizer, lyrics, vim keybindings via config
-- [musikcube - cross-platform terminal player](https://musikcube.com/) -- gapless, crossfade, streaming server, large library support
-- [CAVA - Cross-platform Audio Visualizer](https://github.com/karlstav/cava) -- reference for terminal audio visualization
-- [Plexamp features](https://www.plex.tv/plexamp/) -- gapless, EQ, Sweet Fades, what audiophiles expect from Plex music
-- [tmux-now-playing plugin](https://github.com/spywhere/tmux-now-playing) -- pattern for tmux status bar music integration
-- [MPRIS D-Bus Specification](https://specifications.freedesktop.org/mpris/latest/) -- standard for Linux media player integration
-- [Plex API Documentation](https://developer.plex.tv/pms/) -- playlist and audio streaming endpoints
-- [LinuxLinks - 16 Best Terminal Music Players](https://www.linuxlinks.com/best-free-open-source-terminal-based-music-players/) -- ecosystem overview
-- [Slant - 9 Best CLI Music Players](https://www.slant.co/topics/2429/~best-command-line-music-players) -- community rankings
+- [rodio docs - Sink](https://docs.rs/rodio/latest/rodio/struct.Sink.html) -- verified: multiple Sinks share one OutputStream, independent volume control
+- [rodio docs - mixer](https://docs.rs/rodio/latest/rodio/dynamic_mixer/index.html) -- alternative to multiple Sinks for parallel playback
+- [rodio GitHub](https://github.com/RustAudio/rodio) -- confirmed: no restriction on simultaneous Sink count
+- [Moodist](https://moodist.mvze.net/) -- open-source ambient sound app, layered sounds with individual volume, presets
+- [myNoise](https://mynoise.net/) -- 10-slider mixer, per-element volume, animate mode, save-to-URL
+- [Noisli](https://www.noisli.com) -- intuitive slider-based mixing, simple UX for layering sounds
+- [Coffitivity](https://coffitivity.com/) -- specifically mixes user's music with ambient coffee shop sounds
+- [Ambient Mixer](https://www.ambient-mixer.com/) -- 8-channel mixer with crossfade, mute per channel, looping options
+- [Focurio](https://focurio.web.app/) -- ambient sound mixer with focus timer
+- [A Soft Murmur](https://asoftmurmur.com/) -- simple ambient mixing for focus
+- [Deepfocus.io](https://deepfocus.io/) -- ambient sounds with music, timed sessions
+- [Plex API - Search Hub](https://plexapi.dev/api-reference/search/perform-a-search) -- hub-based search with type filtering
+- [Plex API - Library Sections](https://www.plexopedia.com/plex-media-server/api/library/music/) -- music library endpoints for artist/album/track browsing
+- [10HourLoop - Crossfade Guide](https://10hourloop.com/blog/what-is-crossfade-audio-looping/) -- crossfade looping patterns for ambient audio (1-3 second crossfades)
 
 ---
-*Feature research for: TUI music player (Plex-backed, tmux-integrated)*
-*Researched: 2026-02-08*
+*Feature research for: Multi-channel audio / ambient track layering (TermTunes v1.1)*
+*Researched: 2026-02-10*

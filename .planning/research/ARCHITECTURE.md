@@ -1,457 +1,573 @@
-# Architecture Research
+# Architecture for v1.1: Multi-Channel Audio & Track Browsing
 
-**Domain:** TUI Music Player with Plex Media Server Integration
-**Researched:** 2026-02-08
+**Project:** TermTunes v1.1
+**Researched:** 2026-02-10
 **Confidence:** HIGH
 
-## Standard Architecture
+## Context
 
-TUI music players universally follow an **event-driven, message-passing architecture** with clear separation between UI rendering, audio playback, API communication, and state management. After studying rmpc (MPD client), jellyfin-tui (Jellyfin client), ytermusic (YouTube Music client), and youtui (YouTube Music client), a consistent pattern emerges: a central event loop coordinates loosely-coupled subsystems that communicate through typed message channels.
+TermTunes v1.0 is a working 3,507-line Rust TUI music player. The architecture is established
+and proven: single-threaded event loop in app.rs, synchronous player.rs wrapping rodio, async
+Plex API calls in plex.rs, ratatui rendering in ui.rs. v1.1 extends this architecture without
+changing its fundamentals.
 
-For TermTunes specifically, the recommended architecture is **Go with Bubble Tea (Elm Architecture)** because: (1) the plexgo SDK provides a mature, actively maintained Go client for the Plex API, (2) Bubble Tea's Model-Update-View pattern naturally maps to a music player's state transitions, and (3) Go's goroutines elegantly handle the concurrent operations (API calls, audio streaming, UI rendering) that a streaming music player demands.
+This document covers the architectural changes needed for:
+1. A second audio channel (ambient Sink) on the existing OutputStream
+2. Track browsing from Plex music library sections
+3. Integration with the existing App state machine and event loop
+4. Session persistence for ambient state
 
-### System Overview
-
-```
-+---------------------------------------------------------------------+
-|                        Presentation Layer                            |
-|  +-------------+  +-----------+  +----------+  +-----------+        |
-|  | Library View|  |Queue View |  |Player Bar|  |Search View|        |
-|  +------+------+  +-----+-----+  +----+-----+  +-----+-----+       |
-|         |               |              |              |              |
-+---------+---------------+--------------+--------------+--------------+
-|                        Application Core                              |
-|  +------------------------------------------------------------------+|
-|  |                    Bubble Tea Event Loop                          ||
-|  |  Model (state) <-- Update (messages) --> View (render)           ||
-|  +------------------------------------------------------------------+|
-|  +----------------+  +-----------------+  +----------------+         |
-|  | Input Handler  |  | Command Router  |  | State Manager  |         |
-|  | (vim bindings) |  | (tea.Cmd funcs) |  | (app model)    |         |
-|  +----------------+  +-----------------+  +----------------+         |
-+---------+---------------+--------------+--------------+--------------+
-|                        Service Layer                                 |
-|  +------------------+  +------------------+  +------------------+    |
-|  | Plex Client      |  | Audio Engine     |  | Cache Manager    |    |
-|  | (plexgo SDK)     |  | (mpv via go-mpv) |  | (local state)    |    |
-|  +------------------+  +------------------+  +------------------+    |
-+---------------------------------------------------------------------+
-|                        External Systems                              |
-|  +------------------+  +------------------+                          |
-|  | Plex Media       |  | OS Audio         |                          |
-|  | Server (HTTP)    |  | Subsystem        |                          |
-|  +------------------+  +------------------+                          |
-+---------------------------------------------------------------------+
-```
-
-### Component Responsibilities
-
-| Component | Responsibility | Typical Implementation |
-|-----------|----------------|------------------------|
-| Bubble Tea Event Loop | Central coordinator: receives all messages, dispatches to Update, triggers View renders | Root `tea.Model` with hierarchical sub-models for each view |
-| Input Handler | Captures keyboard events, translates vim-style bindings to application commands | Keymap configuration struct, context-sensitive binding resolution |
-| Library View | Browse Plex music libraries: artists, albums, tracks | Sub-model implementing `tea.Model`, list/table Bubble components |
-| Queue View | Display and manage current playback queue | Sub-model with reorderable list, drag-select support |
-| Player Bar | Persistent playback controls: progress, now-playing, volume | Always-visible footer widget, updated by playback state messages |
-| Search View | Search Plex library with real-time results | Sub-model with text input, debounced API queries via `tea.Cmd` |
-| Plex Client | All Plex API communication: auth, library browsing, playlist CRUD, stream URL resolution | Wrapper around plexgo SDK, returns typed domain models |
-| Audio Engine | Audio playback: play, pause, seek, volume, queue advancement | mpv via go-mpv bindings (handles HTTP streaming, format decoding, gapless playback) |
-| Cache Manager | Local caching of library metadata, album art, session state | In-memory LRU cache with optional SQLite persistence |
-| State Manager | Centralized application state: current track, queue, playback status, navigation context | Single Go struct embedded in root Model, modified only in Update |
-
-## Recommended Project Structure
+## Current Architecture (v1.0)
 
 ```
-src/
-├── cmd/
-│   └── termtunes/
-│       └── main.go              # Entry point, Bubble Tea program init
-├── internal/
-│   ├── app/
-│   │   ├── app.go               # Root tea.Model, message routing
-│   │   ├── messages.go          # All custom message types
-│   │   └── keymap.go            # Vim-style keybinding definitions
-│   ├── ui/
-│   │   ├── library/
-│   │   │   ├── model.go         # Library browser sub-model
-│   │   │   └── view.go          # Library rendering
-│   │   ├── queue/
-│   │   │   ├── model.go         # Queue sub-model
-│   │   │   └── view.go          # Queue rendering
-│   │   ├── player/
-│   │   │   ├── bar.go           # Now-playing bar widget
-│   │   │   └── view.go          # Player bar rendering
-│   │   ├── search/
-│   │   │   ├── model.go         # Search sub-model
-│   │   │   └── view.go          # Search rendering
-│   │   └── components/
-│   │       ├── list.go          # Reusable list widget
-│   │       ├── modal.go         # Modal overlay component
-│   │       └── statusbar.go     # Status bar component
-│   ├── plex/
-│   │   ├── client.go            # Plex API wrapper (over plexgo)
-│   │   ├── auth.go              # Authentication flow (token, PIN)
-│   │   ├── library.go           # Library/metadata operations
-│   │   ├── streaming.go         # Stream URL resolution, transcoding
-│   │   └── models.go            # Domain types (Artist, Album, Track)
-│   ├── player/
-│   │   ├── engine.go            # Audio engine interface
-│   │   ├── mpv.go               # mpv backend implementation
-│   │   ├── queue.go             # Queue management logic
-│   │   └── state.go             # Playback state (playing, paused, etc.)
-│   ├── config/
-│   │   ├── config.go            # App configuration loading
-│   │   └── keymap.go            # User-customizable keybindings
-│   └── cache/
-│       ├── cache.go             # LRU metadata cache
-│       └── store.go             # Optional persistent storage
-├── go.mod
-└── go.sum
++------------------------------------------------------------------+
+|                        Event Loop (app.rs)                        |
+|  100ms poll cycle: handle keys, check downloads, update viz, draw |
++-----+----+----------+------------+------------+------------------+
+      |    |          |            |            |
+      v    v          v            v            v
+  [Input]  [Timer]  [Downloads]  [Playback]  [Render]
+  handle   check    check mpsc   auto-adv    terminal
+  keys     signals  try_recv()   on empty    draw(ui)
+      |               |            |
+      v               v            v
++----------+   +----------+   +---------+
+| plex.rs  |   | player.rs|   | ui.rs   |
+| PlexAPI  |   | rodio    |   | ratatui |
+| reqwest  |   | Sink     |   | widgets |
++----------+   +----------+   +---------+
+                    |
+              [OutputStream]
+              [ALSA/Pulse]
 ```
 
-### Structure Rationale
+### Current Audio Architecture (Single Channel)
 
-- **cmd/termtunes/:** Single entry point. Initializes Bubble Tea program, loads config, wires dependencies.
-- **internal/app/:** The Bubble Tea root model and message definitions. This is the "glue" layer that owns the event loop and routes messages to sub-models. Keeping message types centralized here prevents circular imports.
-- **internal/ui/:** Each major view is its own package with a model (state + Update) and view (rendering). This mirrors how rmpc and jellyfin-tui organize their pane/screen systems. Components shared across views live in `components/`.
-- **internal/plex/:** Complete isolation of Plex API concerns. The rest of the app never imports plexgo directly -- it goes through this layer's domain types. This enables testing with mock Plex responses and protects against SDK API changes.
-- **internal/player/:** Audio engine abstraction. The `engine.go` interface allows swapping mpv for beep or another backend without touching UI code. Queue logic lives here because queue management is fundamentally a playback concern (next track, shuffle, repeat).
-- **internal/config/:** User configuration including custom keybindings. Loaded at startup, potentially hot-reloadable later.
-- **internal/cache/:** Metadata caching to reduce API calls. Plex libraries can be large; caching artist/album/track metadata locally is essential for responsive navigation.
+```
+OutputStream (one instance, created in Player::new())
+    |
+    +-- mixer() --> Sink (recreated per track via Sink::connect_new)
+                       |
+                       +-- VisualizerSource<Decoder<Cursor<Vec<u8>>>>
+```
 
-## Architectural Patterns
+### Key Existing Patterns (preserved in v1.1)
 
-### Pattern 1: Elm Architecture (Model-Update-View)
+| Pattern | How It Works | v1.1 Impact |
+|---------|-------------|-------------|
+| Download-then-play | `std::thread::spawn` + `reqwest::blocking::get` -> mpsc -> decode -> Sink.append | Ambient uses same pattern with separate mpsc channel |
+| Lazy Player init | `player: Option<Player>`, created on first track play | Player now holds `Option<Sink>` for ambient too |
+| Event loop polling | `event::poll(100ms)` + `try_recv()` for downloads | Add `ambient_download_rx.try_recv()` check |
+| Volume persistence | `saved_volume: f32` on App, applied to new Sinks | Add `ambient_volume: f32` with `[/]` keybindings |
+| Visualizer tap | `VisualizerSource` wraps main source, copies samples | Remains on main channel ONLY -- ambient excluded |
+| Session restore | `session.toml` with playlist/track/volume/shuffle/repeat | Extend with `ambient_*` fields |
+| Sink recreation | New Sink per track via `Sink::connect_new(stream.mixer())` | Ambient Sink follows same pattern |
 
-**What:** All state lives in a single Model struct. All state changes happen in Update. All rendering happens in View. Messages are the only way to trigger changes.
-**When to use:** Always -- this is the core pattern enforced by Bubble Tea.
-**Trade-offs:** Extremely predictable state management and easy debugging. Can feel verbose for simple interactions. Sub-model composition requires explicit message forwarding.
+### Current Key Binding Map (for conflict checking)
 
-**Example:**
-```go
-// Root model owns all sub-models and shared state
-type Model struct {
-    // Shared state
-    playback  player.State
-    queue     player.Queue
-    plexToken string
+```
+q           Quit                    Ctrl+C      Quit
+Space       Toggle play/pause       j/Down      Navigate down
+k/Up        Navigate up             Enter       Select item
+Esc/Bksp    Go back                 n/>         Next track
+N/<         Previous track          +/=         Volume up (main)
+-/_         Volume down (main)      l/Right     Seek forward
+h/Left      Seek backward           s           Toggle shuffle
+r           Cycle repeat mode       v           Toggle visualizer
+f           Start favorite assign   1-9         Play/assign favorites
+```
 
-    // Sub-models (each implements tea.Model)
-    library   library.Model
-    queueView queue.Model
-    search    search.Model
-    playerBar player.BarModel
+**Unused keys available:** `a`, `A`, `[`, `]`, `b`, `d`, `g`, `G`, `m`, `o`, `p`, `t`, `w`, `x`, `y`, `z`
 
-    // Navigation
-    activeView View  // enum: ViewLibrary, ViewQueue, ViewSearch
-    width      int
-    height     int
+## v1.1 Architecture Changes
+
+### Core Insight: Two Sinks, One OutputStream
+
+rodio explicitly supports multiple simultaneous Sinks on the same OutputStream. From the official docs: "All sounds are mixed together by rodio before being sent to the operating system. There is no restriction on the number of sinks that can be created."
+
+The ambient channel is a **second Sink** connected to the **same OutputStream's mixer**. No new audio devices, threads, or mixing code needed.
+
+```
+OutputStream (one instance, already exists in Player)
+    |
+    +-- mixer()
+         |
+         +-- main_sink: Sink (existing - music playback)
+         |      |
+         |      +-- VisualizerSource<Decoder<Cursor<Vec<u8>>>>
+         |
+         +-- ambient_sink: Sink (NEW - ambient track, re-appended on loop)
+                |
+                +-- Decoder<Cursor<Vec<u8>>>  (re-appended when empty)
+```
+
+### Change 1: Dual-Sink Player (player.rs)
+
+**Current Player struct:**
+```rust
+pub struct Player {
+    _stream: OutputStream,
+    sink: Sink,
+    _audio_data: Option<Vec<u8>>,
+    current_track: Option<String>,
 }
+```
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-    var cmds []tea.Cmd
+**Expanded Player struct:**
+```rust
+pub struct Player {
+    _stream: OutputStream,
 
-    switch msg := msg.(type) {
-    case tea.KeyMsg:
-        // Global keybindings first (quit, view switching)
-        if cmd := m.handleGlobalKey(msg); cmd != nil {
-            return m, cmd
+    // Main channel (existing, unchanged)
+    sink: Sink,
+    _audio_data: Option<Vec<u8>>,
+    current_track: Option<String>,
+
+    // Ambient channel (NEW)
+    ambient_sink: Option<Sink>,
+    ambient_audio_data: Option<Vec<u8>>,
+    ambient_track_name: Option<String>,
+    ambient_volume: f32,
+}
+```
+
+**Why `Option<Sink>` for ambient:** The ambient channel is not always active. Creating the
+Sink lazily (on first ambient track load) matches the existing lazy Player init pattern.
+When no ambient is playing, `ambient_sink` is `None` and all ambient-related event loop
+checks are skipped (zero overhead).
+
+**Why same OutputStream:** Opening two OutputStreams would open two ALSA devices, which
+fails on WSL2 where PulseAudio provides a single default sink. Both Sinks MUST share one
+OutputStream and use its mixer for software mixing.
+
+**New Player methods:**
+```rust
+/// Load an ambient track. Creates new Sink on same mixer, starts playback.
+pub fn load_ambient(&mut self, audio_bytes: Vec<u8>, track_name: String, volume: f32) -> Result<()>
+
+/// Stop ambient playback, release Sink and cached data.
+pub fn stop_ambient(&mut self)
+
+/// Re-append cached ambient bytes when Sink empties (loop mechanism).
+pub fn replay_ambient(&mut self, volume: f32) -> Result<()>
+
+/// Toggle ambient pause/play. No-op if no ambient loaded.
+pub fn toggle_ambient_pause(&self)
+
+/// Set ambient volume independently (0.0..=1.0).
+pub fn set_ambient_volume(&mut self, vol: f32)
+
+/// Volume up/down for ambient channel (0.05 step, matches main pattern).
+pub fn ambient_volume_up(&mut self)
+pub fn ambient_volume_down(&mut self)
+
+/// Accessors: ambient_volume(), ambient_track_name(), is_ambient_playing(),
+/// is_ambient_finished(), has_ambient(), has_ambient_data()
+```
+
+**Looping approach -- manual re-append, NOT `repeat_infinite()`:**
+
+rodio's `repeat_infinite()` has a confirmed memory leak (issue #673, open as of 2025-04-15,
+not fixed in rodio 0.21). Memory grows ~10MB per 15 seconds until eventually stabilizing at
+a high water mark (271-312MB for a 3MB file). This is unacceptable for a background app.
+
+Instead, use the existing `replay_current()` pattern: when the ambient Sink empties, re-decode
+from cached `ambient_audio_data` bytes and append to a fresh Sink. The 100ms event loop tick
+means the gap between loops is at most 100ms -- imperceptible for ambient audio (rain, forest
+sounds, etc.) which typically have gradual fade characteristics.
+
+```rust
+// In event loop, after check_download_complete():
+fn check_ambient_loop(&mut self) -> Result<()> {
+    if let Some(player) = &mut self.player {
+        if player.is_ambient_finished() && player.has_ambient_data() {
+            player.replay_ambient(self.ambient_volume)?;
         }
-        // Route to active view
-        switch m.activeView {
-        case ViewLibrary:
-            newLib, cmd := m.library.Update(msg)
-            m.library = newLib.(library.Model)
-            cmds = append(cmds, cmd)
-        }
-
-    case PlayTrackMsg:
-        // Cross-cutting: update queue, start playback, notify player bar
-        m.queue.SetCurrent(msg.Track)
-        cmds = append(cmds, m.startPlayback(msg.Track))
-
-    case tea.WindowSizeMsg:
-        // Broadcast to all sub-models
-        m.width, m.height = msg.Width, msg.Height
-        // ... update all sub-models
     }
-
-    // Always update player bar (it shows on every view)
-    newBar, cmd := m.playerBar.Update(msg)
-    m.playerBar = newBar.(player.BarModel)
-    cmds = append(cmds, cmd)
-
-    return m, tea.Batch(cmds...)
+    Ok(())
 }
 ```
 
-### Pattern 2: Command-Based Async Operations
+**No VisualizerSource on ambient.** The visualizer should reflect the music, not ambient
+noise (rain, white noise). Ambient sounds would dominate low frequencies and make the
+spectrum display unreadable for actual music.
 
-**What:** All blocking operations (API calls, audio commands) are wrapped in `tea.Cmd` functions that execute in goroutines and return messages with results.
-**When to use:** Any operation that would block the event loop: Plex API calls, audio engine commands, file I/O.
-**Trade-offs:** Keeps UI responsive. Adds indirection (request message -> command -> result message). Must handle loading/error states in the model.
+### Change 2: Dual Download Channels (app.rs)
 
-**Example:**
-```go
-// Command: fetch albums from Plex (runs in goroutine)
-func fetchAlbums(client *plex.Client, artistID string) tea.Cmd {
-    return func() tea.Msg {
-        albums, err := client.GetAlbums(artistID)
-        if err != nil {
-            return AlbumsFetchErrorMsg{Err: err}
-        }
-        return AlbumsFetchedMsg{Albums: albums}
-    }
+**New App fields for ambient:**
+```rust
+// Ambient channel state
+ambient_track_name: Option<String>,      // Display name of loaded ambient track
+ambient_part_key: Option<String>,        // Plex part key for session persistence
+ambient_volume: f32,                      // Independent from saved_volume (main)
+ambient_enabled: bool,                    // Toggle on/off without losing selection
+
+// Ambient download
+ambient_download_rx: Option<std::sync::mpsc::Receiver<Result<(Vec<u8>, String)>>>,
+```
+
+**Event loop changes:**
+```
+Event Loop (per 100ms tick):
+1. check_download_complete()           -- existing
+2. check_ambient_download_complete()   -- NEW (same try_recv pattern)
+3. check_ambient_loop()                -- NEW (re-append if ambient sink empty)
+4. auto-advance main track             -- existing
+5. update visualizer                   -- existing (main channel only)
+6. draw UI                             -- existing (extended for ambient panel)
+7. poll keyboard events                -- existing (new keybindings added)
+```
+
+**Why separate mpsc channels:** Main and ambient downloads have different lifecycle behaviors.
+Main downloads transition AppView (Tracks -> Downloading -> Playing). Ambient downloads do
+NOT change AppView -- the user stays wherever they were. Mixing them in one channel requires
+discriminator tagging and complex branching. Two channels keep logic clean.
+
+### Change 3: Browser as Modal Overlay (app.rs + ui.rs)
+
+**AppView addition:**
+```rust
+pub enum AppView {
+    Playlists,
+    Tracks,
+    Downloading,
+    Playing,
+    Browser,  // NEW: modal overlay for ambient track selection
 }
-
-// In Update, dispatch the command
-case ArtistSelectedMsg:
-    m.loading = true
-    return m, fetchAlbums(m.plexClient, msg.ArtistID)
-
-// Handle the result
-case AlbumsFetchedMsg:
-    m.loading = false
-    m.albums = msg.Albums
-    return m, nil
 ```
 
-### Pattern 3: Audio Engine as Event Source
+**Browser state fields:**
+```rust
+browser_sections: Vec<LibrarySection>,   // Music library sections
+browser_tracks: Vec<Track>,              // Tracks in current browse context
+browser_state: ListState,                // Selection cursor
+browser_mode: BrowserMode,              // What the browser is showing
+browser_section_key: Option<String>,    // Currently selected section
+previous_view: AppView,                 // Where to return on Esc
+```
 
-**What:** The audio engine runs independently and pushes state changes (track ended, position updated, error occurred) as Bubble Tea messages into the event loop. The UI never polls the engine.
-**When to use:** Always for playback state. The audio engine is a long-lived goroutine that produces events.
-**Trade-offs:** Clean separation between audio and UI. Requires a bridge that converts engine events into `tea.Msg` types. Position updates need throttling to avoid flooding the event loop.
-
-**Example:**
-```go
-// Audio engine event listener (runs as tea.Cmd)
-func listenToEngine(engine *player.Engine) tea.Cmd {
-    return func() tea.Msg {
-        // Blocks until engine produces an event
-        event := <-engine.Events()
-        switch event.Type {
-        case player.EventTrackEnded:
-            return TrackEndedMsg{}
-        case player.EventPositionUpdate:
-            return PositionUpdateMsg{Position: event.Position}
-        case player.EventError:
-            return PlaybackErrorMsg{Err: event.Error}
-        }
-        return nil
-    }
+**BrowserMode enum:**
+```rust
+pub enum BrowserMode {
+    Sections,      // Listing music library sections
+    Tracks,        // Browsing tracks within a section
+    SearchInput,   // User is typing a search query
+    SearchResults, // Showing search results
 }
-
-// After handling each engine message, re-subscribe
-case TrackEndedMsg:
-    m.playback.State = Stopped
-    cmd := m.advanceQueue()  // Start next track
-    return m, tea.Batch(cmd, listenToEngine(m.engine))
 ```
 
-## Data Flow
+**Why a single Browser view with BrowserMode instead of multiple AppView variants:**
+The browser is a modal overlay -- it appears over the current view and disappears when done.
+It should not be a navigation destination in the view hierarchy alongside Playlists/Tracks.
+Using BrowserMode as internal state keeps the browser self-contained and avoids complicating
+the existing view transition logic in `go_back()` and `select_item()`.
 
-### Request Flow
-
-```
-[Keyboard Input]
-    |
-    v
-[Bubble Tea Event Loop] --> [Input Handler resolves vim binding]
-    |
-    v
-[Update function] --> routes to active view's Update
-    |
-    v
-[Sub-model Update] --> may return tea.Cmd for async work
-    |                       |
-    v                       v
-[Model state updated]   [Goroutine executes]
-    |                       |
-    v                       v
-[View re-renders]       [Result message returned to event loop]
-```
-
-### Playback Flow (Critical Path)
+**Why popup overlay, not full-screen view:**
+The user should see their current playback context while selecting an ambient track. A popup
+keeps the main track list visible beneath, providing spatial context. ratatui supports this
+via the Clear widget + bordered Block pattern (see official popup example).
 
 ```
-1. User selects track in Library View
-    |
-    v
-2. PlayTrackMsg dispatched to root Update
-    |
-    v
-3. Root Update: updates queue state, returns startPlayback command
-    |
-    v
-4. startPlayback command (goroutine):
-   a. Calls plex.Client.GetStreamURL(trackID) --> resolves Part.key
-   b. Constructs full URL: http://{server}:32400/{part_key}?X-Plex-Token={token}
-   c. Sends URL to AudioEngine.Play(url)
-   d. Returns PlaybackStartedMsg
-    |
-    v
-5. AudioEngine (mpv):
-   a. Opens HTTP URL directly (mpv handles HTTP streaming natively)
-   b. Decodes audio (mp3/flac/aac/etc -- mpv supports all Plex formats)
-   c. Outputs to OS audio subsystem
-   d. Emits events: position updates, track ended, errors
-    |
-    v
-6. Engine events --> listenToEngine command --> messages to event loop
-    |
-    v
-7. Player Bar updates progress display, handles track advancement
++-----------------------------------+
+|  Playlists / Tracks               |
+|   +---------------------------+   |
+|   | Select Ambient Track      |   |  <- Popup overlay (70% x 60%)
+|   | / Search: rain________    |   |
+|   |                           |   |
+|   | > Rain and Thunder  4:32  |   |
+|   |   Ocean Waves       3:15  |   |
+|   |   Forest Morning    5:01  |   |
+|   +---------------------------+   |
+|                                   |
++-----------------------------------+
+|  [A] Rain Sounds  Vol: 40%        |  <- Ambient status (1 line)
+|  >> Track Name - Artist - Album   |  <- Player bar (3 lines)
+|  ================================ |
+|  Playing | Vol: 80% | 2:34/4:12   |
++-----------------------------------+
 ```
 
-### Plex Authentication Flow
+**Keybinding additions:**
 
-```
-1. App startup: check for saved token in config
-    |
-    +--> Token exists: validate with Plex API
-    |       |
-    |       +--> Valid: proceed to library browse
-    |       +--> Invalid: start auth flow
-    |
-    +--> No token: start auth flow
-            |
-            v
-2. Auth flow:
-   a. Request PIN from plex.tv/api/v2/pins
-   b. Display PIN code and URL to user
-   c. Poll plex.tv/api/v2/pins/{id} until authorized
-   d. Extract auth_token from response
-   e. Save token to config file
-   f. Connect to Plex server with token
-```
+| Key | Context | Action |
+|-----|---------|--------|
+| `a` | Any view except Browser | Toggle ambient on/off (pause/resume) |
+| `A` | Any view except Browser | Open ambient browser (modal popup) |
+| `[` | Any view except Browser | Ambient volume down |
+| `]` | Any view except Browser | Ambient volume up |
+| `j/k` | Browser | Navigate list |
+| `Enter` | Browser (Sections) | Enter section, list tracks |
+| `Enter` | Browser (Tracks/SearchResults) | Select track, download as ambient |
+| `/` | Browser | Enter search input mode |
+| `Esc` | Browser | Close browser, return to `previous_view` |
 
-### State Management
+**Why `a/A`:** Mnemonic for "ambient". `a` toggles (quick action), `A` opens browser (heavy
+action). Both keys are currently unused. No conflicts with existing bindings.
 
+**Why `[/]`:** Main volume uses `+/-`. Ambient needs distinct keys. `[/]` are adjacent on the
+keyboard, unused, and visually suggest "enclosed/separate" channel.
+
+### Change 4: Plex Track Browsing API (plex.rs)
+
+Three new endpoints, following the identical pattern as existing `fetch_playlists()`/`fetch_tracks()`:
+
+**a) List library sections:**
 ```
-Root Model (single source of truth)
-    |
-    +-- playback: { state, currentTrack, position, duration, volume }
-    |     ^
-    |     | (updated by AudioEngine events)
-    |
-    +-- queue: { tracks[], currentIndex, shuffle, repeat }
-    |     ^
-    |     | (updated by user actions + track end events)
-    |
-    +-- library: { sections[], currentPath, artists[], albums[], tracks[] }
-    |     ^
-    |     | (updated by Plex API response messages)
-    |
-    +-- navigation: { activeView, previousView, modalStack }
-          ^
-          | (updated by keyboard input)
+GET {server_url}/library/sections
+Filter: type == "artist" (identifies music libraries)
+Response: { MediaContainer: { Directory: [{ key, title, type }] } }
 ```
 
-### Key Data Flows
+**b) List tracks in a section:**
+```
+GET {server_url}/library/sections/{key}/all?type=10
+type=10 is the Plex type ID for audio tracks
+Optional: &limit=100 for large libraries
+Response: { MediaContainer: { Metadata: [Track] } } -- same Track struct
+```
 
-1. **Library Navigation:** Key press -> View switch or drill-down -> Plex API fetch command -> Response populates model -> View re-renders list
-2. **Track Playback:** Track selection -> Queue update + stream URL resolution -> mpv plays HTTP stream -> Position events update player bar
-3. **Search:** Keystroke -> Debounced search command -> Plex API search -> Results populate search model -> View renders results
-4. **Queue Management:** Add/remove/reorder action -> Queue state updated -> If current track affected, audio engine notified
+**c) Search tracks:**
+```
+GET {server_url}/hubs/search?query={text}&sectionId={section_key}&limit=50
+Response: { MediaContainer: { Hub: [{ type, Metadata: [Track] }] } }
+Extract the hub where type == "track"
+```
 
-## Scaling Considerations
+**New type:**
+```rust
+#[derive(Deserialize, Debug, Clone)]
+pub struct LibrarySection {
+    pub key: String,
+    pub title: String,
+    #[serde(rename = "type")]
+    pub section_type: String,
+}
+```
 
-| Scale | Architecture Adjustments |
-|-------|--------------------------|
-| Small library (<1K tracks) | No caching needed. Fetch on demand. Simple in-memory state. |
-| Medium library (1K-50K tracks) | Add LRU metadata cache. Paginate API requests. Lazy-load album art. |
-| Large library (50K+ tracks) | SQLite local cache with incremental sync. Virtual scrolling in lists. Background prefetch of adjacent pages. |
+**Why reuse existing `Track` struct:** The Plex API returns tracks in the same JSON format
+whether they come from a playlist or a library section. The existing `Track` struct with
+`media[].parts[].key` works for both. `stream_url()` works identically.
 
-### Scaling Priorities
+**MVP scope:** Implement `fetch_music_sections()` and `fetch_section_tracks()` first. Search
+(`search_tracks()`) adds value but can be a follow-up within the same phase if time permits.
 
-1. **First bottleneck: API latency for large libraries.** Plex pagination defaults are generous but browsing a 50K-track library without caching means repeated network round-trips. Solution: cache library metadata locally after first fetch, with TTL-based invalidation.
-2. **Second bottleneck: UI responsiveness during network operations.** Already handled by the async command pattern -- no blocking in Update/View. But search needs debouncing to avoid flooding the Plex API.
+### Change 5: Ambient Status Panel (ui.rs)
 
-## Anti-Patterns
+**Single line above the player bar:**
+```
+| [A] Rain Sounds  Vol: 40%  |  <- Length(1), cyan text, only when ambient loaded
+```
 
-### Anti-Pattern 1: Blocking the Event Loop
+**Layout adjustment:**
+```rust
+let ambient_height = if app.has_ambient() { 1 } else { 0 };
+// Insert between visualizer/main area and player bar
+```
 
-**What people do:** Make Plex API calls or audio engine commands directly in the `Update()` function.
-**Why it's wrong:** Bubble Tea's event loop is single-threaded. A 200ms API call freezes the entire UI. The player bar stops updating. Keyboard input queues up.
-**Do this instead:** Always wrap blocking operations in `tea.Cmd` functions. These execute in separate goroutines and return results as messages.
+In narrow mode (< 40 cols), the ambient line is hidden -- ambient still plays, just no
+visual indicator. This follows the existing narrow-mode pattern that hides volume/shuffle/repeat
+indicators.
 
-### Anti-Pattern 2: Polling Playback State
+### Change 6: Session Persistence (config.rs)
 
-**What people do:** Set up a ticker to poll the audio engine for current position every 100ms.
-**Why it's wrong:** Creates unnecessary load, timing jitter in the progress bar, and couples the UI refresh rate to an arbitrary poll interval.
-**Do this instead:** Have the audio engine push position updates as events. Use mpv's observe_property mechanism to get callbacks on position changes. Convert these to Bubble Tea messages.
+**Expanded Session struct:**
+```rust
+pub struct Session {
+    // Existing fields (unchanged)
+    pub playlist_rating_key: Option<String>,
+    pub playlist_title: Option<String>,
+    pub track_index: Option<usize>,
+    pub volume: f32,
+    pub shuffle_enabled: bool,
+    pub repeat_mode: String,
 
-### Anti-Pattern 3: Direct Plex SDK Usage in UI Code
+    // Ambient state (NEW)
+    #[serde(default)]
+    pub ambient_part_key: Option<String>,       // Plex part key for re-download
+    #[serde(default)]
+    pub ambient_track_title: Option<String>,    // Display name
+    #[serde(default)]
+    pub ambient_volume: Option<f32>,            // 0.0..1.0
+    #[serde(default)]
+    pub ambient_enabled: Option<bool>,          // Was ambient active?
+}
+```
 
-**What people do:** Import plexgo directly in view models and call API methods inline.
-**Why it's wrong:** Couples UI to a specific SDK version. Makes testing impossible without a real Plex server. Leaks API response types into UI layer. Any SDK breaking change ripples through the entire codebase.
-**Do this instead:** Create a `plex.Client` abstraction layer that returns domain types (Artist, Album, Track). UI code only knows about domain types. Test with mock client implementations.
+**Why `#[serde(default)]`:** Existing v1.0 session.toml files lack ambient fields. Default
+deserialization prevents parse errors on upgrade. Missing fields become `None`.
 
-### Anti-Pattern 4: Monolithic Root Model
+**Why store `part_key` not `rating_key`:** The part key (e.g., `/library/parts/12345/file.flac`)
+is what `plex_client.stream_url()` needs to construct the download URL. Storing it directly
+avoids an extra API call to resolve track metadata on session restore.
 
-**What people do:** Put all state and all Update logic in a single enormous Model struct and Update function.
-**Why it's wrong:** The Update function becomes thousands of lines. Every message type is handled in one switch statement. Adding a new view requires modifying the god function.
-**Do this instead:** Decompose into sub-models. Each view owns its own `tea.Model` implementation. The root model routes messages and composes views. Sub-models communicate through the root via messages, never directly.
+**Session restore flow for ambient:**
+```
+restore_session()
+    +-- existing main track restore (unchanged)
+    +-- if session.ambient_part_key is Some:
+            +-- construct stream URL via plex_client.stream_url(part_key)
+            +-- spawn background download thread (same pattern)
+            +-- on completion: Player::load_ambient(bytes, name, volume)
+            +-- if session.ambient_enabled == Some(true): playing
+            +-- if Some(false): load but immediately pause
+```
 
-### Anti-Pattern 5: Storing Stream URLs Long-Term
+## Component Boundaries
 
-**What people do:** Cache the full streaming URL (including auth token) when a track is added to the queue.
-**Why it's wrong:** Plex tokens can rotate, and transcoding sessions expire. A cached URL from 30 minutes ago may return 401 or 404.
-**Do this instead:** Store track metadata IDs in the queue. Resolve the stream URL at play time, just before handing it to the audio engine. This ensures fresh tokens and valid session URLs.
+| Component | Responsibility | Communicates With |
+|-----------|---------------|-------------------|
+| `player.rs` | Owns OutputStream, main Sink, ambient Sink. Exposes ambient audio methods. No UI knowledge. | Called by `app.rs` |
+| `app.rs` | Orchestrates: ambient state, download triggers, loop detection, volume persistence, browser view, keybindings. | Calls `player.rs`, `plex.rs`. Read by `ui.rs` |
+| `plex.rs` | Library section listing, track fetching/search. Returns domain types. No audio knowledge. | Called by `app.rs` |
+| `ui.rs` | Renders ambient status panel, browser popup overlay. No audio or API knowledge. | Reads from `app.rs` accessors |
+| `config.rs` | Extends Session struct with ambient fields. Backward-compatible deserialization. | Read/written by `app.rs` |
+| `visualizer.rs` | **NO CHANGE.** Taps only main Sink source. Ambient excluded. | Unchanged |
+| `tui.rs` | **NO CHANGE.** Terminal lifecycle. | Unchanged |
+| `auth.rs` | **NO CHANGE.** Plex authentication. | Unchanged |
 
-## Integration Points
+## Data Flow: Ambient Track Selection and Playback
 
-### External Services
+```
+1. User presses 'A' (open ambient browser)
+   |
+   v
+2. App: save previous_view, set view = Browser, mode = Sections
+   |  fetch_music_sections() if not cached
+   |
+   v
+3. User navigates j/k in sections, presses Enter
+   |
+   v
+4. App: fetch_section_tracks(section_key), mode = Tracks
+   |
+   v
+5. User navigates j/k in tracks, presses Enter on track
+   |
+   v
+6. App: construct stream URL, spawn download thread (ambient_download_rx)
+   |  restore previous_view (browser closes immediately)
+   |
+   v  .... user continues in previous view, no disruption ....
+   |
+   v
+7. Event loop: check_ambient_download_complete() -> try_recv()
+   |
+   v
+8. Player::load_ambient(bytes, name, volume)
+   |  -> stop existing ambient Sink (if any)
+   |  -> create new ambient Sink on same mixer
+   |  -> decode audio, append to ambient Sink
+   |  -> cache bytes for looping
+   |
+   v
+9. Event loop: check_ambient_loop() (every 100ms tick)
+   |  -> when ambient Sink empties, replay_ambient() from cached bytes
+```
 
-| Service | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| Plex Media Server | HTTP REST API via plexgo SDK | All requests require `X-Plex-Token` header. Server at port 32400. Supports JSON responses (set Accept header). |
-| plex.tv Auth | OAuth-style PIN flow via plex.tv API | PIN requested, user authorizes in browser, app polls for completion. Token persisted locally. |
-| OS Audio (via mpv) | libmpv C bindings via go-mpv | mpv handles HTTP streaming, codec decoding, audio output natively. Supports gapless playback, seek, volume. |
+## Patterns to Follow
 
-### Internal Boundaries
+### Pattern: Parallel Sink Lifecycle
+Each Sink (main, ambient) has independent lifecycle: created -> playing -> stopped.
+Main Sink lifecycle is managed by `load_and_play()` and `replay_current()`.
+Ambient Sink lifecycle mirrors this with `load_ambient()` and `replay_ambient()`.
+**Critical rule:** Never stop the OutputStream. Both Sinks depend on it.
 
-| Boundary | Communication | Notes |
-|----------|---------------|-------|
-| UI <-> Plex Client | `tea.Cmd` functions returning domain types as messages | UI dispatches fetch commands, receives typed result messages. Never calls client synchronously. |
-| UI <-> Audio Engine | Bidirectional via messages and event channel | Commands flow UI->Engine via method calls in `tea.Cmd`. Events flow Engine->UI via channel converted to `tea.Msg`. |
-| Plex Client <-> Cache | Internal to plex package | Client checks cache before API call. Cache populated on successful responses. Transparent to UI layer. |
-| Root Model <-> Sub-models | `tea.Msg` routing in root `Update()` | Root forwards relevant messages to sub-models. Sub-models return commands that produce messages routed back through root. |
-| Config <-> All Components | Read at startup, injected via constructors | Config loaded once, passed as dependency. Hot-reload possible later via file watcher + config reload message. |
+### Pattern: Volume Independence
+Main volume: `+/=` (up), `-/_` (down), stored in `saved_volume`
+Ambient volume: `]` (up), `[` (down), stored in `ambient_volume`
+Both persisted independently in Session. Both applied to new Sinks on creation.
 
-## Build Order (Dependency Chain)
+### Pattern: Non-Disruptive Background Operations
+Ambient download and looping happen without changing AppView. The main track download
+transitions through AppView::Downloading. The ambient download does NOT. This prevents
+the ambient layer from interrupting the user's browsing/navigation flow.
 
-Based on component dependencies, the recommended implementation order:
+### Pattern: Browser as Ephemeral Modal
+The browser stores `previous_view` on open, restores it on close. No persistent browser
+state survives between opens. Each `A` press fetches fresh sections/tracks.
 
-1. **Config + Plex Auth** (no dependencies) -- Must authenticate before anything else works
-2. **Plex Client wrapper** (depends on: config, auth) -- Need API access to populate any view
-3. **Audio Engine** (depends on: config) -- Standalone, testable with any HTTP audio URL
-4. **Root App Model + Navigation** (depends on: nothing at runtime, but shapes everything) -- Establish the Bubble Tea skeleton early
-5. **Player Bar** (depends on: audio engine events) -- Core UX element visible on every screen
-6. **Library View** (depends on: plex client) -- Primary browsing interface
-7. **Queue View** (depends on: audio engine, library) -- Requires tracks to exist in queue
-8. **Search View** (depends on: plex client) -- Additive feature, not required for basic playback
-9. **Cache Layer** (depends on: plex client) -- Performance optimization, add when navigation feels slow
-10. **Visualizer** (depends on: audio engine) -- Optional, purely additive
+## Anti-Patterns to Avoid
 
-**Rationale:** Auth and API client are pure prerequisites -- nothing works without them. The audio engine is independent and can be developed in parallel. The Bubble Tea skeleton (root model + navigation) should be established early because all views plug into it. Player bar comes before library because you need to see playback state while developing the library browser. Library before queue because you need to browse to populate the queue. Search and cache are enhancements that layer onto existing functionality.
+### Anti-Pattern: Using `repeat_infinite()`
+**Why bad:** Confirmed memory leak (rodio issue #673, open, not fixed in 0.21). Memory grows
+~10MB per 15 seconds until stabilizing at 100-300MB. Unacceptable for a background app.
+**Instead:** Manual re-append from cached bytes when Sink empties. Matches existing
+`replay_current()` pattern. Max 100ms gap, imperceptible for ambient audio.
+
+### Anti-Pattern: Separate Audio Device
+**Why bad:** Two OutputStreams would compete for ALSA device. Fails on WSL2 PulseAudio.
+**Instead:** `Sink::connect_new(self._stream.mixer())` for ambient Sink, sharing OutputStream.
+
+### Anti-Pattern: Manual Audio Mixing
+**Why bad:** Unnecessary complexity. rodio's internal mixer handles this automatically.
+**Instead:** Two Sinks with independent volume/pause. rodio mixes at the mixer level.
+
+### Anti-Pattern: Shared Download Channel
+**Why bad:** Main downloads change AppView to Downloading/Playing. Ambient downloads should not.
+**Instead:** Separate mpsc channels with separate handler methods.
+
+### Anti-Pattern: Visualizer on Ambient
+**Why bad:** Ambient noise (rain, white noise) dominates low frequencies, making the spectrum
+unreadable for actual music.
+**Instead:** VisualizerSource wraps only the main Sink. Ambient is invisible to the visualizer.
+
+### Anti-Pattern: Full Library Hierarchy Browser
+**Why bad:** Scope creep. Ambient selection needs "find rain sounds", not Artist > Album > Track.
+**Instead:** Flat track list per library section + search filtering.
+
+### Anti-Pattern: Ambient Playlists
+**Why bad:** Explicitly out of scope per PROJECT.md. Doubles ambient complexity.
+**Instead:** Single track + manual loop via re-append.
+
+## File Changes Summary
+
+| File | Change Type | What Changes |
+|------|------------|-------------|
+| `player.rs` | Extend | Add ambient Sink, ambient audio methods |
+| `app.rs` | Extend | Add ambient state, browser mode, keybindings, download handling, loop check |
+| `plex.rs` | Extend | Add LibrarySection type, section listing, track browsing methods |
+| `ui.rs` | Extend | Add ambient status panel, browser popup overlay |
+| `config.rs` | Extend | Add ambient fields to Session struct |
+| `visualizer.rs` | **NO CHANGE** | |
+| `tui.rs` | **NO CHANGE** | |
+| `auth.rs` | **NO CHANGE** | |
+
+No new files needed. All changes extend existing modules following established patterns.
+
+## Build Order (dependency-driven)
+
+```
+Phase 1: Player dual-sink (player.rs)         <- No dependencies, audio foundation
+    |
+    |  CAN PARALLELIZE WITH:
+    |
+Phase 2: Plex track browsing API (plex.rs)    <- No dependencies, data layer
+    |
+    v
+Phase 3: App ambient controls (app.rs)        <- Depends on Phase 1 (Player methods)
+    |                                              ambient toggle, volume, download flow
+    v
+Phase 4: Browser UI + overlay (ui.rs + app.rs) <- Depends on Phase 2 (API) + Phase 3 (state)
+    |                                              modal popup, section/track navigation, search
+    v
+Phase 5: Session persistence (config.rs)       <- Depends on Phase 3 (ambient state fields)
+    |                                              expand Session, save/restore ambient
+    v
+Phase 6: Integration testing + polish          <- Depends on all above
+                                                   WSL2 dual-sink, narrow terminals, errors
+```
 
 ## Sources
 
-- [rmpc architecture (MPD TUI client)](https://deepwiki.com/mierak/rmpc/1-overview) -- HIGH confidence, detailed architecture documentation
-- [ytermusic architecture (YouTube Music TUI)](https://deepwiki.com/ccgauche/ytermusic) -- HIGH confidence, detailed architecture documentation
-- [jellyfin-tui (Jellyfin TUI client)](https://github.com/dhonus/jellyfin-tui) -- MEDIUM confidence, repository structure analysis
-- [youtui (YouTube Music TUI)](https://github.com/nick42d/youtui) -- MEDIUM confidence, repository structure analysis
-- [Bubble Tea framework](https://github.com/charmbracelet/bubbletea) -- HIGH confidence, official documentation
-- [Bubble Tea state machine pattern](https://zackproser.com/blog/bubbletea-state-machine) -- MEDIUM confidence, community pattern
-- [Building Bubble Tea programs](https://leg100.github.io/en/posts/building-bubbletea-programs/) -- MEDIUM confidence, community best practices
-- [plexgo SDK](https://github.com/LukeHagar/plexgo) -- MEDIUM confidence, repository documentation
-- [go-mpv bindings](https://github.com/gen2brain/go-mpv) -- MEDIUM confidence, repository documentation
-- [gopxl/beep v2](https://github.com/gopxl/beep) -- MEDIUM confidence, official documentation
-- [Plex Media Server API](https://developer.plex.tv/pms/) -- HIGH confidence, official Plex documentation
-- [Plex streaming overview](https://support.plex.tv/articles/200250387-streaming-media-direct-play-and-direct-stream/) -- HIGH confidence, official Plex documentation
-- [Plex download API](https://www.plexopedia.com/plex-media-server/api/library/download-media-file/) -- MEDIUM confidence, community documentation verified against official
+- [rodio official docs - multiple Sinks](https://docs.rs/rodio/latest/rodio/) -- HIGH confidence: "no restriction on number of sinks"
+- [rodio Sink::connect_new](https://docs.rs/rodio/latest/rodio/struct.Sink.html) -- HIGH confidence: takes `&Mixer`, creates independent channel
+- [rodio issue #673 - repeat_infinite memory leak](https://github.com/RustAudio/rodio/issues/673) -- HIGH confidence: confirmed, unfixed in 0.21
+- [ratatui popup example](https://ratatui.rs/examples/apps/popup/) -- HIGH confidence: official overlay pattern
+- [Plex API search hub](https://plexapi.dev/api-reference/search/perform-a-search) -- MEDIUM confidence: `/hubs/search` with sectionId
+- [Plex API library sections](https://support.plex.tv/articles/201638786-plex-media-server-url-commands/) -- MEDIUM confidence: `/library/sections`
+- [Plex API music tracks type=10](https://www.plexopedia.com/plex-media-server/api/library/music/) -- MEDIUM confidence: community docs
+- Existing TermTunes v1.0 codebase (all 8 source files, 3,507 lines) -- HIGH confidence: direct analysis
 
 ---
-*Architecture research for: TUI Music Player with Plex Integration (TermTunes)*
-*Researched: 2026-02-08*
+*Architecture research for: TermTunes v1.1 (Multi-Channel Audio & Track Browsing)*
+*Researched: 2026-02-10*
