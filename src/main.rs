@@ -1,5 +1,7 @@
 mod app;
+mod auth;
 mod config;
+mod plex;
 mod tui;
 
 use color_eyre::Result;
