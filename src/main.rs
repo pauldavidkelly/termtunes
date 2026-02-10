@@ -40,11 +40,15 @@ async fn main() -> Result<()> {
 
     tracing::info!("TermTunes starting up");
 
-    // 3. Set PULSE_LATENCY_MSEC to improve WSL2 audio latency.
+    // 3. Set PULSE_LATENCY_MSEC to improve WSL2 audio quality.
     //    Must be set BEFORE creating any OutputStream/audio device.
-    //    See research: WSLg PulseAudio bridge benefits from increased buffer.
+    //    The WSLg PulseAudio bridge introduces scheduling jitter that
+    //    causes buffer underruns (crackling/clicking) at low latencies.
+    //    150ms provides enough buffer to absorb this jitter while staying
+    //    imperceptible for music playback. Lower values (e.g. 60ms) cause
+    //    audible artifacts on WSL2.
     //    Safety: called at startup before any threads are spawned.
-    unsafe { std::env::set_var("PULSE_LATENCY_MSEC", "60") };
+    unsafe { std::env::set_var("PULSE_LATENCY_MSEC", "150") };
 
     // 3b. Check WSL2 audio dependencies early and warn the user while we
     //     are still on the normal terminal (not alternate screen).
