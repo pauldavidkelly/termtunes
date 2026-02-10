@@ -21,6 +21,11 @@ pub struct Config {
     /// Server configurations keyed by machine identifier.
     #[serde(default)]
     pub servers: HashMap<String, ServerConfig>,
+
+    /// Favorite playlist assignments keyed by number key ("1" through "9").
+    /// Allows instant playlist activation with a single key press.
+    #[serde(default)]
+    pub favorites: HashMap<String, FavoritePlaylist>,
 }
 
 /// Configuration for a single Plex server.
@@ -34,6 +39,18 @@ pub struct ServerConfig {
 
     /// X-Plex-Token for authenticating with this server.
     pub token: String,
+}
+
+/// A favorite playlist assignment, mapping a hotkey (1-9) to a playlist.
+///
+/// Stored in the config file so favorites persist across application restarts.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FavoritePlaylist {
+    /// The Plex rating key identifying the playlist.
+    pub rating_key: String,
+
+    /// Human-readable playlist title (for display in UI).
+    pub title: String,
 }
 
 /// Resolve the path to the config file using XDG conventions.

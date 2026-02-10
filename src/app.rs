@@ -155,6 +155,10 @@ pub struct App {
 
     /// Current repeat mode (Off, All, One) -- cycled with 'r'.
     repeat_mode: RepeatMode,
+
+    /// True when user pressed 'f' in Playlists view and we are waiting
+    /// for a number key (1-9) to assign the selected playlist as a favorite.
+    awaiting_favorite_key: bool,
 }
 
 impl App {
@@ -193,6 +197,7 @@ impl App {
             shuffle_order: Vec::new(),
             shuffle_position: 0,
             repeat_mode: RepeatMode::Off,
+            awaiting_favorite_key: false,
         }
     }
 
@@ -263,6 +268,16 @@ impl App {
     /// Get the current repeat mode.
     pub fn repeat_mode(&self) -> RepeatMode {
         self.repeat_mode
+    }
+
+    /// Whether the app is waiting for a number key (1-9) to assign a favorite.
+    pub fn awaiting_favorite_key(&self) -> bool {
+        self.awaiting_favorite_key
+    }
+
+    /// Get a reference to the favorites map (key "1"-"9" -> FavoritePlaylist).
+    pub fn favorites(&self) -> &std::collections::HashMap<String, config::FavoritePlaylist> {
+        &self.config.favorites
     }
 
     // -----------------------------------------------------------------------
@@ -467,8 +482,26 @@ impl App {
                     }
                 }
             }
+            // Assign favorite (DIFF-04) -- f key starts favorite assignment mode
+            (KeyCode::Char('f'), _) => {
+                if matches!(self.view, AppView::Playlists) {
+                    self.awaiting_favorite_key = true;
+                }
+            }
+            // Number keys 1-9: assign favorite (if awaiting) or start favorite
+            (KeyCode::Char(c @ '1'..='9'), _) => {
+                if self.awaiting_favorite_key {
+                    self.assign_favorite(c)?;
+                    self.awaiting_favorite_key = false;
+                } else {
+                    self.start_favorite(c).await?;
+                }
+            }
             // Back (from Tracks/Playing to Playlists)
-            (KeyCode::Esc, _) | (KeyCode::Backspace, _) => self.go_back(),
+            (KeyCode::Esc, _) | (KeyCode::Backspace, _) => {
+                self.awaiting_favorite_key = false;
+                self.go_back();
+            }
             _ => {}
         }
         Ok(())
@@ -532,6 +565,12 @@ impl App {
                         if !self.tracks.is_empty() {
                             self.track_state.select(Some(0));
                         }
+
+                        // Regenerate shuffle order for the new playlist
+                        if self.shuffle_enabled {
+                            self.regenerate_shuffle_order();
+                        }
+
                         self.view = AppView::Tracks;
                     }
                 }
@@ -879,6 +918,74 @@ impl App {
         }
         self.shuffle_order = indices;
         self.shuffle_position = 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // Favorite playlist management
+    // -----------------------------------------------------------------------
+
+    /// Assign the currently selected playlist as a favorite for the given key.
+    ///
+    /// Saves the assignment to config.toml so it persists across restarts.
+    /// Only valid when in the Playlists view with a playlist selected.
+    fn assign_favorite(&mut self, key: char) -> Result<()> {
+        if let Some(idx) = self.playlist_state.selected() {
+            if let Some(playlist) = self.playlists.get(idx) {
+                let fav = config::FavoritePlaylist {
+                    rating_key: playlist.rating_key.clone(),
+                    title: playlist.title.clone(),
+                };
+                tracing::info!(key = %key, playlist = %playlist.title, "Assigned favorite playlist");
+                self.config.favorites.insert(key.to_string(), fav);
+                config::save_config(&self.config)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Start playback of the favorite playlist assigned to the given key.
+    ///
+    /// Fetches tracks from the Plex server, resets track state, and starts
+    /// playing the first track. Does nothing if no favorite is assigned to
+    /// the key.
+    async fn start_favorite(&mut self, key: char) -> Result<()> {
+        let key_str = key.to_string();
+        let fav = match self.config.favorites.get(&key_str) {
+            Some(fav) => fav.clone(),
+            None => return Ok(()), // No favorite assigned to this key
+        };
+
+        tracing::info!(key = %key, playlist = %fav.title, "Starting favorite playlist");
+
+        // Fetch tracks for the favorite playlist
+        match self.plex_client.fetch_tracks(&fav.rating_key).await {
+            Ok(tracks) => {
+                self.tracks = tracks;
+                self.current_playlist_title = fav.title;
+            }
+            Err(e) => {
+                tracing::error!(key = %key, "Failed to fetch favorite playlist: {}", e);
+                self.error_message = Some(format!("Favorite not found: {}", e));
+                return Ok(());
+            }
+        }
+
+        // Reset track state
+        self.track_state = ListState::default();
+        if !self.tracks.is_empty() {
+            self.track_state.select(Some(0));
+        }
+
+        // Reset shuffle order for new playlist if shuffle is enabled
+        if self.shuffle_enabled {
+            self.regenerate_shuffle_order();
+        }
+
+        // Start playing the first track
+        if !self.tracks.is_empty() {
+            self.play_track_at_index(0)?;
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------

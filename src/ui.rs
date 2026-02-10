@@ -35,15 +35,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 /// Render the playlist list view.
 fn render_playlists(frame: &mut Frame, app: &mut App, area: Rect) {
+    let favorites = app.favorites();
     let items: Vec<ListItem> = app
         .playlists()
         .iter()
         .map(|p| {
+            // Check if this playlist has a favorite key assigned
+            let fav_prefix = favorites
+                .iter()
+                .find(|(_, fav)| fav.rating_key == p.rating_key)
+                .map(|(key, _)| format!("[{}] ", key))
+                .unwrap_or_default();
+
             let count = p
                 .leaf_count
                 .map(|c| format!(" ({} tracks)", c))
                 .unwrap_or_default();
-            ListItem::new(format!("{}{}", p.title, count))
+            ListItem::new(format!("{}{}{}", fav_prefix, p.title, count))
         })
         .collect();
 
@@ -204,7 +212,13 @@ fn render_player_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(gauge, line2_area);
 
     // --- Line 3: Status (or error if present) ---
-    let status_line = if let Some(err) = app.error_message() {
+    let status_line = if app.awaiting_favorite_key() {
+        // Show favorite assignment prompt when awaiting a number key
+        Line::from(vec![Span::styled(
+            " Press 1-9 to assign favorite, Esc to cancel ",
+            Style::default().fg(Color::Yellow),
+        )])
+    } else if let Some(err) = app.error_message() {
         // Show error in red on line 3 instead of normal status
         Line::from(vec![
             Span::styled(
@@ -239,7 +253,29 @@ fn render_player_bar(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::White),
         );
 
-        Line::from(vec![state_label, sep.clone(), volume_span, sep, time_span])
+        // Build spans incrementally to support optional shuffle/repeat indicators
+        let mut spans = vec![state_label, sep.clone(), volume_span, sep.clone(), time_span];
+
+        // Shuffle indicator (magenta)
+        if app.shuffle_enabled() {
+            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                "[Shuffle]",
+                Style::default().fg(Color::Magenta),
+            ));
+        }
+
+        // Repeat indicator (blue)
+        let repeat_text = app.repeat_mode().indicator();
+        if !repeat_text.is_empty() {
+            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                repeat_text,
+                Style::default().fg(Color::Blue),
+            ));
+        }
+
+        Line::from(spans)
     };
 
     frame.render_widget(Paragraph::new(status_line), line3_area);
@@ -255,14 +291,19 @@ fn format_duration(d: std::time::Duration) -> String {
 ///
 /// Shows error messages (red) if present, otherwise shows keybinding help.
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let (text, style) = if let Some(err) = app.error_message() {
+    let (text, style) = if app.awaiting_favorite_key() {
+        (
+            " Press 1-9 to assign favorite, Esc to cancel".to_string(),
+            Style::default().fg(Color::Yellow).bg(Color::DarkGray),
+        )
+    } else if let Some(err) = app.error_message() {
         (
             format!(" ERROR: {} ", err),
             Style::default().fg(Color::White).bg(Color::Red),
         )
     } else {
         (
-            " TermTunes | q:quit  j/k:navigate  Enter:select  Space:pause  n/N:next/prev  +/-:volume"
+            " TermTunes | q:quit  j/k:nav  Enter:select  Space:pause  n/N:next/prev  +/-:vol  s:shuffle  r:repeat  h/l:seek  f:fav  1-9:play fav"
                 .to_string(),
             Style::default().fg(Color::White).bg(Color::DarkGray),
         )
