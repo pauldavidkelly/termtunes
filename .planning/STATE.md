@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-08)
 
 **Core value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
-**Current focus:** Phase 2 complete, ready for Phase 3
+**Current focus:** Phase 3 -- Differentiators (shuffle, repeat, seek, UI indicators)
 
 ## Current Position
 
-Phase: 2 of 5 (Core TUI and Playback) -- COMPLETE
-Plan: 2 of 2 in current phase
-Status: Phase 2 complete, ready for Phase 3 planning
-Last activity: 2026-02-10 -- Completed 02-02 (Player Bar UI)
+Phase: 3 of 5 (Differentiators)
+Plan: 1 of 2 in current phase
+Status: 03-01 complete (playback state mechanics), ready for 03-02
+Last activity: 2026-02-10 -- Completed 03-01 (Shuffle, Repeat, Seek)
 
-Progress: [████████████████████] 100% (Phase 2)
+Progress: [██████████░░░░░░░░░░] 50% (Phase 3)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 5
-- Average duration: ~14 min
-- Total execution time: ~1.21 hours
+- Total plans completed: 6
+- Average duration: ~12 min
+- Total execution time: ~1.26 hours
 
 **By Phase:**
 
@@ -29,10 +29,11 @@ Progress: [████████████████████] 100% (P
 |-------|-------|-------|----------|
 | 01-foundation-audio-poc | 3/3 | ~58 min | ~19 min |
 | 02-core-tui-playback | 2/2 | ~14 min | ~7 min |
+| 03-differentiators | 1/2 | ~3 min | ~3 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-02 (~5 min), 01-03 (~38 min), 02-01 (~3 min), 02-02 (~11 min)
-- Trend: Phase 2 plans faster due to well-researched plans with no new dependencies
+- Last 5 plans: 01-03 (~38 min), 02-01 (~3 min), 02-02 (~11 min), 03-01 (~3 min)
+- Trend: Plans getting faster as codebase is well-understood and plans are precise
 
 *Updated after each plan completion*
 
@@ -70,6 +71,11 @@ Recent decisions affecting current work:
 - [02-02]: LineGauge ratio clamped to 0.0..=1.0 to prevent panic when get_pos() exceeds duration
 - [02-02]: Error messages shown in player bar line 3 (red) instead of replacing entire bar
 - [02-02]: current_track_index() accessor added to app.rs for UI track highlighting
+- [03-01]: Shuffle uses index array with current track at position 0 on toggle
+- [03-01]: Repeat One replays from cached _audio_data bytes (no re-download)
+- [03-01]: Seek keybindings (h/l/Left/Right) only active in Playing view
+- [03-01]: User skip (n/N) ignores RepeatMode::One -- only auto-advance replays
+- [03-01]: prev_track always wraps regardless of repeat mode
 
 ### Pending Todos
 
@@ -82,5 +88,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-10
-Stopped at: Completed 02-02-PLAN.md (Player Bar UI) -- Phase 2 complete
-Resume file: .planning/phases/02-core-tui-playback/02-02-SUMMARY.md
+Stopped at: Completed 03-01-PLAN.md (Shuffle, Repeat, Seek)
+Resume file: .planning/phases/03-differentiators/03-01-SUMMARY.md
