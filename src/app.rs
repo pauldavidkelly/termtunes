@@ -5,15 +5,14 @@ use std::time::Duration;
 
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::ListState;
 use ratatui::DefaultTerminal;
 
 use crate::auth;
 use crate::config::{self, Config, ServerConfig};
+use crate::player::Player;
 use crate::plex::{self, Playlist, PlexClient, PlexServer, Track};
+use crate::ui;
 
 // ---------------------------------------------------------------------------
 // App state machine
@@ -21,11 +20,15 @@ use crate::plex::{self, Playlist, PlexClient, PlexServer, Track};
 
 /// The current view / mode of the application.
 #[derive(Debug, PartialEq)]
-enum AppView {
+pub enum AppView {
     /// Displaying the list of audio playlists.
     Playlists,
     /// Displaying the tracks within a selected playlist.
     Tracks,
+    /// A track is being downloaded (shown while fetching audio bytes).
+    Downloading,
+    /// Tracks view with active playback (user can select another track).
+    Playing,
 }
 
 // ---------------------------------------------------------------------------
@@ -35,7 +38,8 @@ enum AppView {
 /// Main application state.
 ///
 /// Holds the authenticated Plex client, loaded playlists and tracks,
-/// navigation state for list widgets, and the UI state machine.
+/// navigation state for list widgets, the audio player, and the UI state
+/// machine.
 pub struct App {
     /// Application configuration (loaded from config.toml).
     config: Config,
@@ -58,7 +62,7 @@ pub struct App {
     /// Tracks in the currently selected playlist.
     tracks: Vec<Track>,
 
-    /// Current view (Playlists or Tracks).
+    /// Current view (Playlists, Tracks, Downloading, or Playing).
     view: AppView,
 
     /// Selection state for the playlist list.
@@ -69,6 +73,13 @@ pub struct App {
 
     /// Title of the currently selected playlist (for status bar).
     current_playlist_title: String,
+
+    /// Audio player (initialized lazily when first track is played).
+    player: Option<Player>,
+
+    /// Channel receiver for completed track downloads.
+    /// The background download thread sends (audio_bytes, track_name) when done.
+    download_rx: Option<std::sync::mpsc::Receiver<Result<(Vec<u8>, String)>>>,
 }
 
 impl App {
@@ -97,8 +108,53 @@ impl App {
             playlist_state,
             track_state: ListState::default(),
             current_playlist_title: String::new(),
+            player: None,
+            download_rx: None,
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Public accessors for ui.rs
+    // -----------------------------------------------------------------------
+
+    /// Get the current view.
+    pub fn view(&self) -> &AppView {
+        &self.view
+    }
+
+    /// Get a reference to the playlists.
+    pub fn playlists(&self) -> &[Playlist] {
+        &self.playlists
+    }
+
+    /// Get a reference to the tracks.
+    pub fn tracks(&self) -> &[Track] {
+        &self.tracks
+    }
+
+    /// Get the current playlist title.
+    pub fn current_playlist_title(&self) -> &str {
+        &self.current_playlist_title
+    }
+
+    /// Get a mutable reference to the playlist ListState (for rendering).
+    pub fn playlist_state_mut(&mut self) -> &mut ListState {
+        &mut self.playlist_state
+    }
+
+    /// Get a mutable reference to the track ListState (for rendering).
+    pub fn track_state_mut(&mut self) -> &mut ListState {
+        &mut self.track_state
+    }
+
+    /// Get a reference to the player (if initialized).
+    pub fn player(&self) -> Option<&Player> {
+        self.player.as_ref()
+    }
+
+    // -----------------------------------------------------------------------
+    // Event loop
+    // -----------------------------------------------------------------------
 
     /// Run the main event loop.
     ///
@@ -112,9 +168,12 @@ impl App {
                 break;
             }
 
+            // Check for completed downloads (non-blocking)
+            self.check_download_complete()?;
+
             // Draw the UI
             terminal.draw(|frame| {
-                self.draw(frame);
+                ui::render(frame, self);
             })?;
 
             // Poll for keyboard events with 100ms timeout.
@@ -130,103 +189,59 @@ impl App {
         Ok(())
     }
 
-    /// Draw the current UI frame.
-    fn draw(&mut self, frame: &mut ratatui::Frame) {
-        let area = frame.area();
+    /// Check if a background download has completed.
+    ///
+    /// Uses try_recv on the mpsc channel so it never blocks the event loop.
+    /// When download completes, initializes the Player (if needed) and starts
+    /// playback.
+    fn check_download_complete(&mut self) -> Result<()> {
+        if let Some(rx) = &self.download_rx {
+            match rx.try_recv() {
+                Ok(Ok((audio_bytes, track_name))) => {
+                    tracing::info!(
+                        track = %track_name,
+                        size = audio_bytes.len(),
+                        "Download complete, starting playback"
+                    );
 
-        // Layout: main list area + status bar at bottom
-        let [main_area, status_area] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(1),
-        ])
-        .areas(area);
+                    // Initialize player if this is the first track
+                    if self.player.is_none() {
+                        match Player::new() {
+                            Ok(p) => self.player = Some(p),
+                            Err(e) => {
+                                tracing::error!("Failed to create audio player: {}", e);
+                                self.view = AppView::Tracks;
+                                self.download_rx = None;
+                                return Err(e);
+                            }
+                        }
+                    }
 
-        match self.view {
-            AppView::Playlists => {
-                let items: Vec<ListItem> = self
-                    .playlists
-                    .iter()
-                    .map(|p| {
-                        let count = p
-                            .leaf_count
-                            .map(|c| format!(" ({} tracks)", c))
-                            .unwrap_or_default();
-                        ListItem::new(format!("{}{}", p.title, count))
-                    })
-                    .collect();
+                    // Start playback
+                    if let Some(player) = &mut self.player {
+                        player.load_and_play(audio_bytes, track_name)?;
+                    }
 
-                let list = List::new(items)
-                    .block(
-                        Block::default()
-                            .title(" Playlists ")
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::DarkGray)),
-                    )
-                    .highlight_style(
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                    .highlight_symbol("> ");
-
-                frame.render_stateful_widget(list, main_area, &mut self.playlist_state);
-
-                // Status bar: connected server + playlist count
-                let status = Paragraph::new(Span::styled(
-                    format!(
-                        " Connected to {} | {} playlists | j/k:nav Enter:select q:quit",
-                        self.server_name,
-                        self.playlists.len()
-                    ),
-                    Style::default().fg(Color::White).bg(Color::DarkGray),
-                ))
-                .style(Style::default().bg(Color::DarkGray));
-                frame.render_widget(status, status_area);
-            }
-            AppView::Tracks => {
-                let items: Vec<ListItem> = self
-                    .tracks
-                    .iter()
-                    .map(|t| {
-                        let artist = t
-                            .artist
-                            .as_deref()
-                            .unwrap_or("Unknown Artist");
-                        ListItem::new(format!("{} - {}", t.title, artist))
-                    })
-                    .collect();
-
-                let list = List::new(items)
-                    .block(
-                        Block::default()
-                            .title(format!(" {} ", self.current_playlist_title))
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::DarkGray)),
-                    )
-                    .highlight_style(
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    )
-                    .highlight_symbol("> ");
-
-                frame.render_stateful_widget(list, main_area, &mut self.track_state);
-
-                // Status bar: playlist name + track count
-                let status = Paragraph::new(Span::styled(
-                    format!(
-                        " {} | {} tracks | j/k:nav Esc:back q:quit",
-                        self.current_playlist_title,
-                        self.tracks.len()
-                    ),
-                    Style::default().fg(Color::White).bg(Color::DarkGray),
-                ))
-                .style(Style::default().bg(Color::DarkGray));
-                frame.render_widget(status, status_area);
+                    self.view = AppView::Playing;
+                    self.download_rx = None;
+                }
+                Ok(Err(e)) => {
+                    tracing::error!("Download failed: {}", e);
+                    self.view = AppView::Tracks;
+                    self.download_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Download still in progress -- keep waiting
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Sender dropped without sending -- thread panicked?
+                    tracing::error!("Download thread disconnected unexpectedly");
+                    self.view = AppView::Tracks;
+                    self.download_rx = None;
+                }
             }
         }
+        Ok(())
     }
 
     /// Handle a key press event.
@@ -238,13 +253,19 @@ impl App {
             (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => {
                 self.running = false;
             }
+            // Spacebar: toggle play/pause (any view, if player active)
+            (KeyCode::Char(' '), _) => {
+                if let Some(player) = &self.player {
+                    player.toggle_pause();
+                }
+            }
             // Navigate down
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => self.move_selection_down(),
             // Navigate up
             (KeyCode::Char('k'), _) | (KeyCode::Up, _) => self.move_selection_up(),
             // Select / Enter
             (KeyCode::Enter, _) => self.select_item().await?,
-            // Back (from Tracks to Playlists)
+            // Back (from Tracks/Playing to Playlists)
             (KeyCode::Esc, _) | (KeyCode::Backspace, _) => self.go_back(),
             _ => {}
         }
@@ -255,7 +276,8 @@ impl App {
     fn move_selection_down(&mut self) {
         let (state, len) = match self.view {
             AppView::Playlists => (&mut self.playlist_state, self.playlists.len()),
-            AppView::Tracks => (&mut self.track_state, self.tracks.len()),
+            AppView::Tracks | AppView::Playing => (&mut self.track_state, self.tracks.len()),
+            AppView::Downloading => return, // No navigation while downloading
         };
         if len == 0 {
             return;
@@ -269,7 +291,8 @@ impl App {
     fn move_selection_up(&mut self) {
         let (state, len) = match self.view {
             AppView::Playlists => (&mut self.playlist_state, self.playlists.len()),
-            AppView::Tracks => (&mut self.track_state, self.tracks.len()),
+            AppView::Tracks | AppView::Playing => (&mut self.track_state, self.tracks.len()),
+            AppView::Downloading => return,
         };
         if len == 0 {
             return;
@@ -279,7 +302,8 @@ impl App {
         state.select(Some(prev));
     }
 
-    /// Handle Enter key -- select a playlist (fetch tracks) or a track (no-op for now).
+    /// Handle Enter key -- select a playlist (fetch tracks) or a track (start
+    /// download + playback).
     async fn select_item(&mut self) -> Result<()> {
         match self.view {
             AppView::Playlists => {
@@ -310,20 +334,78 @@ impl App {
                     }
                 }
             }
-            AppView::Tracks => {
-                // Track selection is a no-op for now -- playback
-                // will be implemented in Plan 03.
+            AppView::Tracks | AppView::Playing => {
+                self.start_track_download()?;
+            }
+            AppView::Downloading => {
+                // Ignore Enter while downloading
             }
         }
         Ok(())
     }
 
-    /// Go back from Tracks view to Playlists view.
+    /// Start downloading the selected track on a background thread.
+    ///
+    /// Gets the stream URL from the Plex client, spawns a std::thread to
+    /// download the audio bytes using reqwest::blocking, and sends the result
+    /// back via an mpsc channel. The event loop checks for completion on each
+    /// iteration via check_download_complete().
+    fn start_track_download(&mut self) -> Result<()> {
+        if let Some(idx) = self.track_state.selected() {
+            if let Some(track) = self.tracks.get(idx) {
+                // Get the stream URL from the track's media parts
+                let part_key = track
+                    .media
+                    .first()
+                    .and_then(|m| m.parts.first())
+                    .map(|p| p.key.as_str());
+
+                let part_key = match part_key {
+                    Some(key) => key,
+                    None => {
+                        tracing::warn!(
+                            track = %track.title,
+                            "Track has no media parts, cannot play"
+                        );
+                        return Ok(());
+                    }
+                };
+
+                let stream_url = self.plex_client.stream_url(part_key);
+                let track_name = track.title.clone();
+
+                tracing::info!(
+                    track = %track_name,
+                    url = %stream_url,
+                    "Starting track download"
+                );
+
+                // Set state to Downloading
+                self.view = AppView::Downloading;
+
+                // Spawn background download thread
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.download_rx = Some(rx);
+
+                std::thread::spawn(move || {
+                    let result = Player::download_track(&stream_url)
+                        .map(|bytes| (bytes, track_name));
+                    let _ = tx.send(result);
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Go back from Tracks/Playing view to Playlists view.
     fn go_back(&mut self) {
-        if self.view == AppView::Tracks {
-            self.view = AppView::Playlists;
-            self.tracks.clear();
-            self.current_playlist_title.clear();
+        match self.view {
+            AppView::Tracks | AppView::Playing => {
+                self.view = AppView::Playlists;
+                self.tracks.clear();
+                self.current_playlist_title.clear();
+            }
+            _ => {}
         }
     }
 }

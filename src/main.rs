@@ -1,8 +1,10 @@
 mod app;
 mod auth;
 mod config;
+mod player;
 mod plex;
 mod tui;
+mod ui;
 
 use color_eyre::Result;
 use tracing_subscriber::EnvFilter;
@@ -38,40 +40,45 @@ async fn main() -> Result<()> {
 
     tracing::info!("TermTunes starting up");
 
-    // 3. Install panic hook BEFORE terminal init so panics restore terminal
+    // 3. Set PULSE_LATENCY_MSEC to improve WSL2 audio latency.
+    //    Must be set BEFORE creating any OutputStream/audio device.
+    //    See research: WSLg PulseAudio bridge benefits from increased buffer.
+    std::env::set_var("PULSE_LATENCY_MSEC", "60");
+
+    // 4. Install panic hook BEFORE terminal init so panics restore terminal
     tui::install_panic_hook();
 
-    // 4. Register signal handlers (SIGINT, SIGTERM, SIGHUP)
+    // 5. Register signal handlers (SIGINT, SIGTERM, SIGHUP)
     let shutdown = tui::install_signal_handlers();
 
-    // 5. Load config (creates new with UUID on first run)
+    // 6. Load config (creates new with UUID on first run)
     let mut config = config::load_config()?;
     tracing::info!(client_id = %config.client_id, "Config loaded");
 
-    // 6. Save config (ensures file exists on first run)
+    // 7. Save config (ensures file exists on first run)
     config::save_config(&config)?;
 
-    // 7. Authenticate with Plex (before entering TUI so the auth URL
+    // 8. Authenticate with Plex (before entering TUI so the auth URL
     //    is displayed on the normal terminal, not the alternate screen)
     let (plex_client, server_name) =
         app::authenticate(&mut config).await?;
 
     tracing::info!(server = %server_name, "Authenticated with Plex server");
 
-    // 8. Fetch initial playlists
+    // 9. Fetch initial playlists
     let playlists = plex_client.fetch_playlists().await?;
     tracing::info!(count = playlists.len(), "Fetched playlists");
 
-    // 9. Initialize the terminal (enters alternate screen, enables raw mode)
+    // 10. Initialize the terminal (enters alternate screen, enables raw mode)
     let mut terminal = ratatui::init();
 
-    // 10. Create and run the app with authenticated Plex client
+    // 11. Create and run the app with authenticated Plex client
     let mut app = App::new(config, shutdown, plex_client, server_name, playlists);
     let result = app.run(&mut terminal).await;
 
-    // 11. Restore terminal state (leave alternate screen, disable raw mode)
+    // 12. Restore terminal state (leave alternate screen, disable raw mode)
     ratatui::restore();
 
-    // 12. Propagate any error from the app run
+    // 13. Propagate any error from the app run
     result
 }
