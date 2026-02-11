@@ -78,6 +78,25 @@ pub struct Session {
 
     /// Repeat mode stored as string for TOML readability ("off", "all", "one").
     pub repeat_mode: String,
+
+    /// Part key of the ambient track (e.g., "/library/parts/12345/file.flac").
+    /// Used to reconstruct the stream URL on restore.
+    #[serde(default)]
+    pub ambient_part_key: Option<String>,
+
+    /// Display name of the ambient track.
+    #[serde(default)]
+    pub ambient_track_name: Option<String>,
+
+    /// Ambient volume level (0.0 to 1.0). None means "first use" --
+    /// triggers PERSIST-05 default (30% lower than main music volume).
+    #[serde(default)]
+    pub ambient_volume: Option<f32>,
+
+    /// Whether ambient was playing (true) or muted/off (false) at save time.
+    /// Default false: ambient does not auto-start on first use.
+    #[serde(default)]
+    pub ambient_enabled: bool,
 }
 
 /// Resolve the path to the config file using XDG conventions.

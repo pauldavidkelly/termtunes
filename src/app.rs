@@ -255,6 +255,10 @@ pub struct App {
     /// Scales the combined output. Default: 1.0 (no scaling).
     master_volume: f32,
 
+    /// Part key of the currently loaded ambient track, for session persistence.
+    /// Stored when user selects a track from the browser.
+    ambient_part_key: Option<String>,
+
     /// Channel receiver for completed ambient track downloads.
     /// The background download thread sends (audio_bytes, track_name) when done.
     /// Separate from download_rx so ambient downloads don't block main track downloads.
@@ -313,6 +317,7 @@ impl App {
             ambient_volume: 0.3,
             pre_mute_ambient_volume: 0.3,
             master_volume: 1.0,
+            ambient_part_key: None,
             ambient_download_rx: None,
             browser_state: BrowserState::Closed,
             cached_sections: None,
@@ -1592,8 +1597,9 @@ impl App {
     /// Select a track from the browser, start an ambient download using the
     /// existing background thread + mpsc pattern, and close the browser.
     fn browser_select_track(&mut self, idx: usize) -> Result<()> {
-        // Extract track data from browser state before modifying it
-        let (stream_url, track_name) = {
+        // Extract track data from browser state before modifying it.
+        // Also capture part_key as an owned String for session persistence.
+        let (stream_url, track_name, part_key) = {
             let tracks = match &self.browser_state {
                 BrowserState::Tracks { tracks, .. } => tracks,
                 _ => return Ok(()),
@@ -1602,13 +1608,13 @@ impl App {
                 Some(t) => t,
                 None => return Ok(()),
             };
-            let part_key = track
+            let pk = track
                 .media
                 .first()
                 .and_then(|m| m.parts.first())
-                .map(|p| p.key.as_str());
-            let part_key = match part_key {
-                Some(key) => key,
+                .map(|p| p.key.clone());
+            let pk_str = match &pk {
+                Some(key) => key.as_str(),
                 None => {
                     tracing::warn!(
                         track = %track.title,
@@ -1618,8 +1624,11 @@ impl App {
                     return Ok(());
                 }
             };
-            (self.plex_client.stream_url(part_key), track.title.clone())
+            (self.plex_client.stream_url(pk_str), track.title.clone(), pk)
         };
+
+        // Store the part_key for session persistence (PERSIST-01)
+        self.ambient_part_key = part_key;
 
         tracing::info!(channel = "ambient", track = %track_name, "Browser: starting ambient download");
 
@@ -1670,6 +1679,18 @@ impl App {
             volume: self.saved_volume,
             shuffle_enabled: self.shuffle_enabled,
             repeat_mode: self.repeat_mode.to_string_repr().to_string(),
+            ambient_part_key: self.ambient_part_key.clone(),
+            ambient_track_name: self.player.as_ref().and_then(|p| p.ambient_track_name().map(String::from)),
+            // Pitfall 4: When ambient is muted (volume == 0.0), save the pre-mute
+            // volume so the user's intended setting survives quit/restart cycles.
+            ambient_volume: Some(
+                if self.ambient_volume > 0.0 {
+                    self.ambient_volume
+                } else {
+                    self.pre_mute_ambient_volume
+                }
+            ),
+            ambient_enabled: self.ambient_volume > 0.0,
         };
         if let Err(e) = config::save_session(&session) {
             tracing::error!("Failed to save session state: {}", e);
