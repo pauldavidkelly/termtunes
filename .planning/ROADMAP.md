@@ -75,10 +75,10 @@ Plans:
   1. User sees a dedicated UI panel showing the ambient track name, play/pause state, and current volume level
   2. User can adjust ambient volume up/down with dedicated keybindings and sees the change reflected in the UI immediately
   3. User can toggle ambient on/off with a single keybinding and sees the state change in the ambient panel
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 08-01: TBD
+- [ ] 08-01-PLAN.md -- Ambient status panel rendering, [/] volume keybindings, improved m toggle with pre-mute memory
 
 ### Phase 9: Session Persistence
 **Goal**: User's ambient setup survives app restarts -- track selection, volume, and playback state all restored automatically
@@ -113,4 +113,4 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9
 ---
 
 *Roadmap created: 2026-02-10*
-*Last updated: 2026-02-11 after Phase 7 execution*
+*Last updated: 2026-02-11 after Phase 8 planning*
