@@ -88,10 +88,10 @@ Plans:
   1. User quits and restarts TermTunes and the same ambient track resumes playing at the same volume with the same on/off state
   2. On first-ever use (no saved ambient state), ambient volume defaults to 30% lower than main music volume
   3. Existing v1.0 session files load without error (backward compatibility preserved)
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 09-01: TBD
+- [ ] 09-01-PLAN.md -- Extend Session struct, capture ambient part_key, wire save/restore with first-use default and Player init guard
 
 ## Progress
 
