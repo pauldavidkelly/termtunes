@@ -31,7 +31,7 @@
 - [ ] **Phase 6: Dual-Sink Audio Engine** — Second audio channel with independent volume and loop control
 - [x] **Phase 7: Track Browsing & Ambient Playback** — Browse Plex library, select track, play on ambient channel
 - [x] **Phase 8: Ambient Status UI & Controls** — Status panel, volume display, and dedicated keybindings
-- [ ] **Phase 9: Session Persistence** — Save and restore ambient state across app restarts
+- [x] **Phase 9: Session Persistence** — Save and restore ambient state across app restarts
 
 ## Phase Details
 
@@ -108,9 +108,9 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9
 | 6. Dual-Sink Audio Engine | v1.1 | 0/2 | Not started | - |
 | 7. Track Browsing & Ambient Playback | v1.1 | 2/2 | Complete | 2026-02-11 |
 | 8. Ambient Status UI & Controls | v1.1 | 1/1 | Complete | 2026-02-11 |
-| 9. Session Persistence | v1.1 | 0/1 | Not started | - |
+| 9. Session Persistence | v1.1 | 1/1 | Complete | 2026-02-11 |
 
 ---
 
 *Roadmap created: 2026-02-10*
-*Last updated: 2026-02-11 after Phase 8 execution*
+*Last updated: 2026-02-11 after Phase 9 execution*
