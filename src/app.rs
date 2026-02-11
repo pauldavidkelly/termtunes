@@ -1254,7 +1254,7 @@ impl App {
             "Volume budget applied"
         );
 
-        if let Some(player) = &self.player {
+        if let Some(player) = &mut self.player {
             player.set_main_volume(main_final);
             player.set_ambient_volume(ambient_final);
 
