@@ -1420,6 +1420,22 @@ impl App {
                         "Ambient download complete, loading"
                     );
                     self.ambient_download_rx = None;
+
+                    // Ensure Player exists -- ambient may restore before first main
+                    // track play (Pitfall 5). Same init pattern as check_download_complete().
+                    if self.player.is_none() {
+                        match Player::new() {
+                            Ok(p) => {
+                                self.player = Some(p);
+                                tracing::info!("Player initialized for ambient restore (no main track yet)");
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to initialize player for ambient: {}", e);
+                                return;
+                            }
+                        }
+                    }
+
                     self.load_ambient_track(audio_bytes, track_name);
                 }
                 Ok(Err(e)) => {
@@ -1782,6 +1798,53 @@ impl App {
             repeat = ?self.repeat_mode,
             "Session restored"
         );
+
+        // -------------------------------------------------------------------
+        // Ambient state restore (PERSIST-01, PERSIST-02, PERSIST-04, PERSIST-05)
+        // -------------------------------------------------------------------
+
+        // Restore ambient volume from session, or compute first-use default
+        let ambient_vol = match session.ambient_volume {
+            Some(v) => v.clamp(0.0, 1.0),
+            None => {
+                // PERSIST-05: First use -- default to 30% lower than main music volume
+                (session.volume - 0.30).max(0.0)
+            }
+        };
+        // If ambient was disabled (muted) at save time, set volume to 0.0 (muted)
+        // but preserve the saved value in pre_mute_ambient_volume for unmute restore.
+        self.ambient_volume = if session.ambient_enabled { ambient_vol } else { 0.0 };
+        self.pre_mute_ambient_volume = ambient_vol;
+
+        // Store the part_key for future saves
+        self.ambient_part_key = session.ambient_part_key.clone();
+
+        // Restore ambient playback if it was active (PERSIST-01, PERSIST-04)
+        if session.ambient_enabled {
+            if let Some(ref part_key) = session.ambient_part_key {
+                let stream_url = self.plex_client.stream_url(part_key);
+                let track_name = session
+                    .ambient_track_name
+                    .clone()
+                    .unwrap_or_else(|| "Ambient".to_string());
+
+                tracing::info!(
+                    channel = "ambient",
+                    track = %track_name,
+                    volume = ambient_vol,
+                    "Restoring ambient track from session"
+                );
+
+                // Background download (non-blocking, same pattern as browser_select_track)
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.ambient_download_rx = Some(rx);
+                std::thread::spawn(move || {
+                    let result = Player::download_track(&stream_url)
+                        .map(|bytes| (bytes, track_name));
+                    let _ = tx.send(result);
+                });
+            }
+        }
     }
 }
 
