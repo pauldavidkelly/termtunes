@@ -90,6 +90,12 @@ None yet.
 
 - None -- WSL2 dual-sink audio quality validated (Phase 6 fail-fast gate passed)
 
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 1 | Add hierarchical ambient track browser with playlists/artists navigation and search | 2026-02-11 | ee9bfaa | [1-add-hierarchical-ambient-track-browser-w](./quick/1-add-hierarchical-ambient-track-browser-w/) |
+
 ## Session Continuity
 
 Last session: 2026-02-11
