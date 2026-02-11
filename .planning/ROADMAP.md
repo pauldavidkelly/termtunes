@@ -20,7 +20,7 @@
 
 </details>
 
-### v1.1 Multi-Channel Audio (In Progress)
+### v1.1 Multi-Channel Audio (Complete)
 
 **Milestone Goal:** Layer ambient tracks underneath music playlists for enhanced focus during deep work.
 
@@ -28,7 +28,7 @@
 - Integer phases (6, 7, 8, 9): Planned milestone work
 - Decimal phases (7.1, 7.2): Urgent insertions if needed (marked INSERTED)
 
-- [ ] **Phase 6: Dual-Sink Audio Engine** — Second audio channel with independent volume and loop control
+- [x] **Phase 6: Dual-Sink Audio Engine** — Second audio channel with independent volume and loop control
 - [x] **Phase 7: Track Browsing & Ambient Playback** — Browse Plex library, select track, play on ambient channel
 - [x] **Phase 8: Ambient Status UI & Controls** — Status panel, volume display, and dedicated keybindings
 - [x] **Phase 9: Session Persistence** — Save and restore ambient state across app restarts
@@ -105,7 +105,7 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9
 | 3. Differentiators | v1.0 | 2/2 | Complete | 2026-02-10 |
 | 4. Tmux Integration and Polish | v1.0 | 2/2 | Complete | 2026-02-10 |
 | 5. Audio Visualizer | v1.0 | 1/1 | Complete | 2026-02-10 |
-| 6. Dual-Sink Audio Engine | v1.1 | 0/2 | Not started | - |
+| 6. Dual-Sink Audio Engine | v1.1 | 2/2 | Complete | 2026-02-10 |
 | 7. Track Browsing & Ambient Playback | v1.1 | 2/2 | Complete | 2026-02-11 |
 | 8. Ambient Status UI & Controls | v1.1 | 1/1 | Complete | 2026-02-11 |
 | 9. Session Persistence | v1.1 | 1/1 | Complete | 2026-02-11 |
