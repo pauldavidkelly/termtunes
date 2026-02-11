@@ -1243,7 +1243,7 @@ impl App {
         let main_final = main_budgeted * self.master_volume;
         let ambient_final = ambient_budgeted * self.master_volume;
 
-        tracing::debug!(
+        tracing::info!(
             saved_volume = self.saved_volume,
             ambient_volume = self.ambient_volume,
             ambient_active = ambient_active,

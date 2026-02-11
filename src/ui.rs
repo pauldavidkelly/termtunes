@@ -380,11 +380,11 @@ fn render_player_bar(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool, 
             // Narrow mode: only state label + time (drop volume, shuffle, repeat)
             Line::from(vec![state_label, sep, time_span])
         } else {
-            let volume_pct = if let Some(player) = app.player() {
-                (player.volume() * 100.0).round() as u8
-            } else {
-                0
-            };
+            // Display the user's intended volume (saved_volume), NOT the
+            // budget-enforced sink volume. The budget transparently scales
+            // the actual sink values to prevent clipping, but the user should
+            // see their intended setting (0-100%).
+            let volume_pct = (app.saved_volume() * 100.0).round() as u8;
 
             let volume_span = Span::styled(
                 format!("Vol: {}%", volume_pct),
