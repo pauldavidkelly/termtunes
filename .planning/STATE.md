@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-10)
 
 **Core value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
-**Current focus:** Phase 7 - Ambient Track Selection
+**Current focus:** Phase 7 complete -- ready for Phase 8
 
 ## Current Position
 
-Phase: 7 of 9 (Ambient Track Selection)
-Plan: 1 of 2 in current phase
-Status: Executing
-Last activity: 2026-02-11 -- Completed 07-01-PLAN.md (Plex library browsing API + browser state machine)
+Phase: 7 of 9 (Ambient Track Selection) -- COMPLETE
+Plan: 2 of 2 in current phase (all plans complete)
+Status: Phase complete
+Last activity: 2026-02-11 -- Completed 07-02-PLAN.md (browser overlay rendering + ambient volume balance)
 
-Progress: [#############...........] 13/17 plans (v1.0: 10/10, v1.1: 3/7)
+Progress: [##############..........] 14/17 plans (v1.0: 10/10, v1.1: 4/7)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 13
+- Total plans completed: 14
 - Average duration: ~8 min
-- Total execution time: ~1.85 hours
+- Total execution time: ~1.98 hours
 
 **By Phase:**
 
@@ -33,10 +33,10 @@ Progress: [#############...........] 13/17 plans (v1.0: 10/10, v1.1: 3/7)
 | 04-tmux-integration-polish | 2/2 | ~4 min | ~2 min |
 | 05-audio-visualizer | 1/1 | ~5 min | ~5 min |
 | 06-dual-sink-audio-engine | 2/2 | ~extended | ~variable |
-| 07-track-browsing-ambient-playback | 1/2 | ~3 min | ~3 min |
+| 07-track-browsing-ambient-playback | 2/2 | ~11 min | ~5.5 min |
 
 **Recent Trend:**
-- Last 5 plans: 05-01 (~5 min), 06-01 (~5 min), 06-02 (extended - 8 fix iterations), 07-01 (~3 min)
+- Last 5 plans: 06-01 (~5 min), 06-02 (extended - 8 fix iterations), 07-01 (~3 min), 07-02 (~8 min, 2 fix iterations)
 
 *Updated after each plan completion*
 
@@ -49,7 +49,7 @@ All v1.0 decisions logged in PROJECT.md Key Decisions table.
 Key v1.1 decisions:
 - Regular Sink (not SpatialSink) for dual-channel -- SpatialSink is for 3D positional audio
 - Volume management moved from Player to App (budget enforcement initially, then independent channels)
-- Default ambient_volume: 0.7, master_volume: 1.0
+- **REVISED:** Default ambient_volume: 0.3 (was 0.7, too loud), master_volume: 1.0
 - rodio `repeat_infinite()` has confirmed memory leak -- use manual re-append loop
 - Single OutputStream shared by both sinks (never create second OutputStream)
 - **REVISED:** Volume budget REPLACED with independent channels -- proportional budget caused UX issues (volume capped at 59%, ambient audible at 0% main, +/- barely affected ambient)
@@ -62,6 +62,9 @@ Key v1.1 decisions:
 - **NEW:** Music library sections cached on App (Option<Vec<LibrarySection>>), refresh only on restart
 - **NEW:** Browser captures ALL input when open (only Ctrl+C escapes for emergency quit)
 - **NEW:** BrowserState enum with associated ListState for two-level modal navigation
+- **NEW:** popup_area() + Clear widget pattern for centered popup overlays
+- **NEW:** includeMedia=1 required for Plex library section tracks endpoint (media not included by default)
+- **NEW:** Ambient volume 0.3 validated by user as correct background level (0.7 overpowered main)
 
 ### Pending Todos
 
@@ -74,5 +77,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 07-01-PLAN.md (Plex library browsing API + browser state machine)
-Next: 07-02-PLAN.md (browser UI overlay rendering)
+Stopped at: Completed 07-02-PLAN.md (browser overlay rendering + ambient volume balance)
+Next: Phase 8 plans (ambient controls, volume UI, status display)
