@@ -20,12 +20,29 @@ const NARROW_WIDTH: u16 = 40;
 /// this auto-hide the visualizer to preserve the track list and player bar.
 const MIN_VIZ_HEIGHT: u16 = 20;
 
+/// Render the main content area based on current view.
+fn render_main_content(frame: &mut Frame, app: &mut App, area: Rect, width: u16) {
+    match app.view() {
+        AppView::Playlists => render_playlists(frame, app, area, width),
+        AppView::Tracks | AppView::Playing => render_tracks(frame, app, area, width),
+        AppView::Downloading => render_downloading(frame, area),
+    }
+}
+
 /// Render the full UI frame based on the current app state.
 ///
 /// Layout: vertical split with main content area (Fill) and either a 3-line
 /// player bar (when a track is playing) or a 1-line status bar at the bottom.
 /// When the visualizer is enabled and space permits, a visualizer area is
-/// inserted between the main content and the player bar.
+/// inserted between the main content and the player bar. When an ambient
+/// track is loaded, a 1-line ambient status panel is inserted above the
+/// visualizer/player bar.
+///
+/// Four layout combinations:
+/// - viz + ambient: main, ambient (1), viz (8), bar
+/// - viz only:      main, viz (8), bar
+/// - ambient only:  main, ambient (1), bar
+/// - neither:       main, bar
 ///
 /// Handles adaptive layout: shows a "too small" message for very small terminals,
 /// and switches to a simplified narrow layout for panes under 40 columns wide.
@@ -54,40 +71,57 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         && !is_narrow
         && area.height >= MIN_VIZ_HEIGHT;
 
-    if show_viz {
-        // 3-part layout: track list, visualizer, player bar
-        let [main_area, viz_area, bar_area] = Layout::vertical([
+    // Determine whether an ambient track is loaded (show ambient panel)
+    let has_ambient = app.player().is_some_and(|p| p.ambient_track_name().is_some());
+
+    if show_viz && has_ambient {
+        // 4-part layout: main, ambient, viz, bar
+        let [main_area, ambient_area, viz_area, bar_area] = Layout::vertical([
             Constraint::Fill(1),
-            Constraint::Length(8), // 8 rows = 6 content + 2 border
+            Constraint::Length(1),
+            Constraint::Length(8),
             Constraint::Length(bar_height),
         ])
         .areas(area);
 
-        // Render main content
-        match app.view() {
-            AppView::Playlists => render_playlists(frame, app, main_area, width),
-            AppView::Tracks | AppView::Playing => render_tracks(frame, app, main_area, width),
-            AppView::Downloading => render_downloading(frame, main_area),
-        }
-
-        // Render visualizer
+        render_main_content(frame, app, main_area, width);
+        render_ambient_panel(frame, app, ambient_area, is_narrow);
         render_visualizer_area(frame, app, viz_area);
-
-        // Render player bar
         render_player_bar(frame, app, bar_area, is_narrow, width);
+    } else if show_viz {
+        // 3-part layout: main, viz, bar
+        let [main_area, viz_area, bar_area] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(8),
+            Constraint::Length(bar_height),
+        ])
+        .areas(area);
+
+        render_main_content(frame, app, main_area, width);
+        render_visualizer_area(frame, app, viz_area);
+        render_player_bar(frame, app, bar_area, is_narrow, width);
+    } else if has_ambient {
+        // 3-part layout: main, ambient, bar
+        let [main_area, ambient_area, bar_area] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(bar_height),
+        ])
+        .areas(area);
+
+        render_main_content(frame, app, main_area, width);
+        render_ambient_panel(frame, app, ambient_area, is_narrow);
+        if has_player_bar {
+            render_player_bar(frame, app, bar_area, is_narrow, width);
+        } else {
+            render_status_bar(frame, app, bar_area, is_narrow);
+        }
     } else {
-        // Standard 2-part layout: track list + player/status bar
+        // 2-part layout: main, bar
         let [main_area, bar_area] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(bar_height)]).areas(area);
 
-        // Render main content
-        match app.view() {
-            AppView::Playlists => render_playlists(frame, app, main_area, width),
-            AppView::Tracks | AppView::Playing => render_tracks(frame, app, main_area, width),
-            AppView::Downloading => render_downloading(frame, main_area),
-        }
-
-        // Render player bar or status bar
+        render_main_content(frame, app, main_area, width);
         if has_player_bar {
             render_player_bar(frame, app, bar_area, is_narrow, width);
         } else {
@@ -425,6 +459,60 @@ fn render_player_bar(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool, 
     frame.render_widget(Paragraph::new(status_line), line3_area);
 }
 
+/// Render the 1-line ambient status panel.
+///
+/// Shows: state icon (AMB >> or AMB ||) + track name + separator + volume percentage.
+/// Colors: Magenta for active ambient, DarkGray for muted/inactive.
+/// In narrow mode: drops the volume display to save space.
+fn render_ambient_panel(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool) {
+    let player = app.player();
+    let track_name = player
+        .and_then(|p| p.ambient_track_name())
+        .unwrap_or("No ambient");
+    let is_active = app.ambient_volume() > 0.0;
+
+    let state_icon = if is_active {
+        Span::styled(
+            " AMB >> ",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            " AMB || ",
+            Style::default().fg(Color::DarkGray),
+        )
+    };
+
+    let name_span = Span::styled(
+        track_name,
+        Style::default().fg(if is_active {
+            Color::White
+        } else {
+            Color::DarkGray
+        }),
+    );
+
+    if is_narrow {
+        let line = Line::from(vec![state_icon, name_span]);
+        frame.render_widget(Paragraph::new(line), area);
+    } else {
+        let sep = Span::styled(" | ", Style::default().fg(Color::DarkGray));
+        let vol_pct = (app.ambient_volume() * 100.0).round() as u8;
+        let vol_span = Span::styled(
+            format!("Vol: {}%", vol_pct),
+            Style::default().fg(if is_active {
+                Color::Magenta
+            } else {
+                Color::DarkGray
+            }),
+        );
+        let line = Line::from(vec![state_icon, name_span, sep, vol_span]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+}
+
 /// Format a Duration as "MM:SS".
 fn format_duration(d: std::time::Duration) -> String {
     let total_secs = d.as_secs();
@@ -448,12 +536,12 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool) 
         )
     } else if is_narrow {
         (
-            " q:quit j/k:nav Enter:sel Space:pause b:browse".to_string(),
+            " q:quit j/k:nav Enter:sel Space:pause m:amb".to_string(),
             Style::default().fg(Color::White).bg(Color::DarkGray),
         )
     } else {
         (
-            " TermTunes | q:quit  j/k:nav  Enter:select  Space:pause  n/N:next/prev  +/-:vol  s:shuffle  r:repeat  h/l:seek  v:viz  f:fav  1-9:play fav  b:browse  m:mute"
+            " TermTunes | q:quit  j/k:nav  Enter:select  Space:pause  n/N:next/prev  +/-:vol  s:shuffle  r:repeat  h/l:seek  v:viz  f:fav  1-9:play fav  b:browse  m:amb  [/]:amb vol"
                 .to_string(),
             Style::default().fg(Color::White).bg(Color::DarkGray),
         )
