@@ -589,63 +589,189 @@ fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
 /// Render the ambient track browser as a centered popup overlay.
 ///
 /// Uses the Clear widget to erase the background region, then renders
-/// a bordered List widget with the current browser level content
-/// (sections or tracks). Highlight style matches the existing playlist
-/// list (Magenta background to distinguish from main Cyan selection).
+/// content based on the current BrowserState level. Highlight style uses
+/// Magenta background to distinguish from main Cyan selection.
 fn render_browser_overlay(frame: &mut Frame, app: &mut App) {
     let popup = popup_area(frame.area(), 70, 80);
 
     // Clear the popup area to prevent bleed-through from underlying content
     frame.render_widget(Clear, popup);
 
-    match app.browser_state_mut() {
-        BrowserState::Sections { sections, list_state } => {
-            let items: Vec<ListItem> = sections
-                .iter()
-                .map(|s| ListItem::new(s.title.clone()))
-                .collect();
+    let highlight_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Magenta)
+        .add_modifier(Modifier::BOLD);
+    let border_style = Style::default().fg(Color::Magenta);
 
+    match app.browser_state_mut() {
+        BrowserState::TopLevel { list_state } => {
+            let items = vec![
+                ListItem::new("Playlists"),
+                ListItem::new("Artists"),
+            ];
             let list = List::new(items)
                 .block(
                     Block::default()
-                        .title(" Music Libraries ")
+                        .title(" Ambient Browser ")
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Magenta)),
+                        .border_style(border_style),
                 )
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                )
+                .highlight_style(highlight_style)
                 .highlight_symbol("> ");
-
             frame.render_stateful_widget(list, popup, list_state);
         }
-        BrowserState::Tracks { section_title, tracks, list_state } => {
-            let items: Vec<ListItem> = tracks
+        BrowserState::Artists { all_artists, filtered_indices, search_query, list_state, .. } => {
+            // Split popup: top 2 lines for search bar, rest for artist list
+            let [search_area, list_area] = Layout::vertical([
+                Constraint::Length(3), // 1 line border top + 1 search text + 1 border bottom
+                Constraint::Fill(1),
+            ])
+            .areas(popup);
+
+            // Search bar
+            let search_display = if search_query.is_empty() {
+                Span::styled("Type to search...", Style::default().fg(Color::DarkGray))
+            } else {
+                Span::styled(
+                    format!("Search: {}_", search_query),
+                    Style::default().fg(Color::Magenta),
+                )
+            };
+            let title = if search_query.is_empty() {
+                " Artists ".to_string()
+            } else {
+                format!(" Artists - {} matches ", filtered_indices.len())
+            };
+            let search_block = Paragraph::new(Line::from(vec![Span::raw(" "), search_display]))
+                .block(
+                    Block::default()
+                        .title(title)
+                        .borders(Borders::ALL)
+                        .border_style(border_style),
+                );
+            frame.render_widget(search_block, search_area);
+
+            // Artist list (filtered)
+            if filtered_indices.is_empty() && !search_query.is_empty() {
+                let no_match = Paragraph::new("No matches")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(Color::DarkGray))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::DarkGray)),
+                    );
+                frame.render_widget(no_match, list_area);
+            } else {
+                let items: Vec<ListItem> = filtered_indices
+                    .iter()
+                    .filter_map(|&i| all_artists.get(i))
+                    .map(|a| ListItem::new(a.title.clone()))
+                    .collect();
+
+                let list = List::new(items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(border_style),
+                    )
+                    .highlight_style(highlight_style)
+                    .highlight_symbol("> ");
+                frame.render_stateful_widget(list, list_area, list_state);
+            }
+        }
+        BrowserState::Albums { artist_name, albums, list_state, .. } => {
+            let items: Vec<ListItem> = albums
                 .iter()
-                .map(|t| {
-                    let artist = t.artist.as_deref().unwrap_or("Unknown");
-                    ListItem::new(format!("{} - {}", t.title, artist))
+                .map(|a| {
+                    let year_suffix = a.year.map(|y| format!(" ({})", y)).unwrap_or_default();
+                    ListItem::new(format!("{}{}", a.title, year_suffix))
                 })
                 .collect();
 
             let list = List::new(items)
                 .block(
                     Block::default()
-                        .title(format!(" {} - Select Ambient Track ", section_title))
+                        .title(format!(" {} - Albums ", artist_name))
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Magenta)),
+                        .border_style(border_style),
                 )
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                )
+                .highlight_style(highlight_style)
                 .highlight_symbol("> ");
+            frame.render_stateful_widget(list, popup, list_state);
+        }
+        BrowserState::ArtistTracks { album_title, artist_name, tracks, list_state, .. } => {
+            let mut items: Vec<ListItem> = Vec::with_capacity(tracks.len() + 1);
+            // First item: "Play All"
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!(">> Play All ({} tracks)", tracks.len()),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+            ])));
+            // Track items
+            for t in tracks.iter() {
+                let artist = t.artist.as_deref().unwrap_or("Unknown");
+                items.push(ListItem::new(format!("  {} - {}", t.title, artist)));
+            }
 
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .title(format!(" {} - {} ", album_title, artist_name))
+                        .borders(Borders::ALL)
+                        .border_style(border_style),
+                )
+                .highlight_style(highlight_style)
+                .highlight_symbol("> ");
+            frame.render_stateful_widget(list, popup, list_state);
+        }
+        BrowserState::Playlists { playlists, list_state } => {
+            let items: Vec<ListItem> = playlists
+                .iter()
+                .map(|p| {
+                    let count_suffix = p.leaf_count
+                        .map(|c| format!(" ({} tracks)", c))
+                        .unwrap_or_default();
+                    ListItem::new(format!("{}{}", p.title, count_suffix))
+                })
+                .collect();
+
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .title(" Playlists ")
+                        .borders(Borders::ALL)
+                        .border_style(border_style),
+                )
+                .highlight_style(highlight_style)
+                .highlight_symbol("> ");
+            frame.render_stateful_widget(list, popup, list_state);
+        }
+        BrowserState::PlaylistTracks { playlist_title, tracks, list_state } => {
+            let mut items: Vec<ListItem> = Vec::with_capacity(tracks.len() + 1);
+            // First item: "Play All"
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!(">> Play All ({} tracks)", tracks.len()),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+            ])));
+            // Track items
+            for t in tracks.iter() {
+                let artist = t.artist.as_deref().unwrap_or("Unknown");
+                items.push(ListItem::new(format!("  {} - {}", t.title, artist)));
+            }
+
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .title(format!(" {} ", playlist_title))
+                        .borders(Borders::ALL)
+                        .border_style(border_style),
+                )
+                .highlight_style(highlight_style)
+                .highlight_symbol("> ");
             frame.render_stateful_widget(list, popup, list_state);
         }
         BrowserState::Closed => {} // Should not reach here -- caller checks
