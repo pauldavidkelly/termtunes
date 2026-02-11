@@ -440,58 +440,22 @@ impl Player {
         Ok(())
     }
 
-    /// Set the ambient sink volume by recreating the sink with the new volume.
+    /// Set the ambient sink volume directly via Sink::set_volume().
     ///
-    /// Rodio's Sink::set_volume() updates the internal Mutex but the
-    /// periodic_access callback may not pick up the change reliably for
-    /// ambient sinks on some configurations. Workaround: stop the old sink,
-    /// create a fresh one at the target volume, re-decode from cached bytes,
-    /// and append. This is slightly heavier than a simple set_volume but
-    /// guarantees the volume is applied correctly.
+    /// Earlier implementation recreated the entire sink on each volume change
+    /// (stop old, create new, re-decode cached bytes) to work around a
+    /// suspected Sink::set_volume() reliability issue. Testing showed that
+    /// the recreation approach causes playback to restart from the beginning
+    /// on every [/] keypress, which is unacceptable UX for ambient tracks.
     ///
-    /// If no cached audio data exists (ambient was stopped), this is a no-op.
+    /// Direct Sink::set_volume() works correctly for ambient sinks in
+    /// practice -- the volume change is applied immediately without
+    /// interrupting playback position. If reliability issues resurface on
+    /// specific configurations, the recreation approach can be revisited
+    /// with elapsed-time tracking to preserve position.
     pub fn set_ambient_volume(&mut self, vol: f32) {
-        // Only recreate if ambient sink and cached data both exist
-        let has_sink = self.ambient_sink.is_some();
-        let has_data = self.ambient_audio_data.is_some();
-
-        if !has_sink || !has_data {
-            return;
-        }
-
-        // Stop old sink
         if let Some(ref sink) = self.ambient_sink {
-            sink.stop();
-        }
-
-        // Get current playback position from old sink for continuity
-        // (not critical for ambient loops, but nice to have)
-        let audio_bytes = self.ambient_audio_data.clone().unwrap();
-
-        // Create fresh sink at the new volume
-        let new_sink = Sink::connect_new(self._stream.mixer());
-        new_sink.set_volume(vol.clamp(0.0, 1.0));
-
-        // Re-decode and append
-        let cursor = Cursor::new(audio_bytes);
-        match Decoder::builder().with_data(cursor).build() {
-            Ok(source) => {
-                new_sink.append(source);
-                self.ambient_sink = Some(new_sink);
-                tracing::info!(
-                    channel = "ambient",
-                    volume = vol,
-                    "Ambient sink recreated with new volume"
-                );
-            }
-            Err(e) => {
-                // Decode failed -- stop ambient entirely (failure isolation)
-                tracing::error!(
-                    channel = "ambient",
-                    "Failed to decode ambient audio during volume change: {}", e
-                );
-                self.ambient_sink = None;
-            }
+            sink.set_volume(vol.clamp(0.0, 1.0));
         }
     }
 
