@@ -124,6 +124,38 @@ pub struct Part {
 }
 
 // ---------------------------------------------------------------------------
+// Library section types
+// ---------------------------------------------------------------------------
+
+/// A Plex library section (movie, TV, music, photo).
+#[derive(Deserialize, Debug, Clone)]
+pub struct LibrarySection {
+    /// Unique section key (used in API paths, e.g., "3").
+    pub key: String,
+    /// Human-readable name (e.g., "Music", "Ambient Sounds").
+    pub title: String,
+    /// Section type: "movie", "show", "artist" (music), "photo".
+    #[serde(rename = "type")]
+    pub section_type: String,
+}
+
+/// Top-level wrapper for the library sections response.
+/// GET {server}/library/sections returns:
+/// { "MediaContainer": { "Directory": [...] } }
+#[derive(Deserialize, Debug)]
+pub struct SectionsContainer {
+    #[serde(rename = "MediaContainer")]
+    pub media_container: SectionsMediaContainer,
+}
+
+/// The inner container holding the list of library sections.
+#[derive(Deserialize, Debug)]
+pub struct SectionsMediaContainer {
+    #[serde(rename = "Directory", default)]
+    pub directory: Vec<LibrarySection>,
+}
+
+// ---------------------------------------------------------------------------
 // Plex API client
 // ---------------------------------------------------------------------------
 
@@ -187,6 +219,45 @@ impl PlexClient {
                 self.server_url, rating_key
             ))
             .headers(headers)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<TrackContainer>()
+            .await?;
+        Ok(resp.media_container.metadata)
+    }
+
+    /// Fetch all library sections from the server.
+    ///
+    /// GET {server_url}/library/sections
+    pub async fn fetch_library_sections(&self) -> Result<Vec<LibrarySection>> {
+        let headers = self.server_headers();
+        let resp = self
+            .client
+            .get(format!("{}/library/sections", self.server_url))
+            .headers(headers)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<SectionsContainer>()
+            .await?;
+        Ok(resp.media_container.directory)
+    }
+
+    /// Fetch all tracks in a music library section.
+    ///
+    /// GET {server_url}/library/sections/{section_key}/all?type=10
+    /// type=10 is the Plex content type for audio tracks.
+    pub async fn fetch_section_tracks(&self, section_key: &str) -> Result<Vec<Track>> {
+        let headers = self.server_headers();
+        let resp = self
+            .client
+            .get(format!(
+                "{}/library/sections/{}/all",
+                self.server_url, section_key
+            ))
+            .headers(headers)
+            .query(&[("type", "10")])
             .send()
             .await?
             .error_for_status()?
