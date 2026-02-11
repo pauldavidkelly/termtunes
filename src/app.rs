@@ -92,14 +92,41 @@ impl RepeatMode {
 pub enum BrowserState {
     /// Browser is not visible.
     Closed,
-    /// Showing music library sections. User picks one to see its tracks.
-    Sections {
-        sections: Vec<plex::LibrarySection>,
+    /// Top-level: "Playlists" or "Artists" choice.
+    TopLevel {
         list_state: ListState,
     },
-    /// Showing tracks within a selected section. User picks one for ambient.
-    Tracks {
-        section_title: String,
+    /// Artist path: list of artists in a music library section, with search filter.
+    Artists {
+        section_key: String,
+        all_artists: Vec<plex::Artist>,
+        filtered_indices: Vec<usize>,
+        search_query: String,
+        list_state: ListState,
+    },
+    /// Artist path: albums for a selected artist.
+    Albums {
+        section_key: String,
+        artist_name: String,
+        albums: Vec<plex::Album>,
+        list_state: ListState,
+    },
+    /// Artist path: tracks within an album (with ">> Play All" as first item).
+    ArtistTracks {
+        section_key: String,
+        album_title: String,
+        artist_name: String,
+        tracks: Vec<plex::Track>,
+        list_state: ListState,
+    },
+    /// Playlist path: list of audio playlists.
+    Playlists {
+        playlists: Vec<plex::Playlist>,
+        list_state: ListState,
+    },
+    /// Playlist path: tracks within a playlist (with ">> Play All" as first item).
+    PlaylistTracks {
+        playlist_title: String,
         tracks: Vec<plex::Track>,
         list_state: ListState,
     },
@@ -270,6 +297,13 @@ pub struct App {
     /// Cached music library sections to avoid re-fetching on every browser open.
     /// Populated on first open, cleared only on app restart.
     cached_sections: Option<Vec<plex::LibrarySection>>,
+
+    /// Tracks for ambient "Play All" mode. When Some, ambient loops through
+    /// these tracks sequentially instead of repeating a single track.
+    ambient_playlist: Option<Vec<plex::Track>>,
+
+    /// Current position in the ambient playlist (index into ambient_playlist).
+    ambient_playlist_index: usize,
 }
 
 impl App {
@@ -321,6 +355,8 @@ impl App {
             ambient_download_rx: None,
             browser_state: BrowserState::Closed,
             cached_sections: None,
+            ambient_playlist: None,
+            ambient_playlist_index: 0,
         }
     }
 
@@ -1328,49 +1364,92 @@ impl App {
     // Ambient loop and test trigger
     // -----------------------------------------------------------------------
 
-    /// Check if the ambient track has finished and restart the loop.
+    /// Check if the ambient track has finished and handle looping.
     ///
-    /// Polls player.is_ambient_finished() on every event loop tick (~100ms).
-    /// If the ambient track has ended and cached data exists, re-append from
-    /// cached bytes. Uses manual re-append (NOT repeat_infinite) to avoid the
-    /// confirmed memory leak in rodio #673.
+    /// When `ambient_playlist` is Some, advances to the next track in the
+    /// playlist (wrapping at the end for infinite repeat). When None, replays
+    /// the same cached track (single-track repeat behavior).
     ///
-    /// Per user decision: brief silence between loops is acceptable --
-    /// prioritize memory safety over gapless playback.
+    /// Uses manual re-append (NOT repeat_infinite) to avoid the confirmed
+    /// memory leak in rodio #673.
     fn check_ambient_loop(&mut self) {
-        // Check if ambient needs to loop (must release player borrow before
-        // calling apply_ambient_volume, so we check and replay in separate steps)
-        let needs_replay = self
+        let needs_action = self
             .player
             .as_ref()
             .is_some_and(|p| p.is_ambient_finished() && p.has_ambient_data());
 
-        if !needs_replay {
+        if !needs_action {
             return;
         }
 
-        // Pass computed ambient volume for initial sink creation.
-        let initial_volume = self.ambient_volume * self.master_volume;
-        let replay_ok = if let Some(player) = &mut self.player {
-            match player.replay_ambient(initial_volume) {
-                Ok(()) => true,
-                Err(e) => {
-                    // Failure isolation: log error, stop ambient, keep main playing
-                    tracing::error!(
-                        channel = "ambient",
-                        "Ambient loop restart failed: {}, stopping ambient", e
-                    );
-                    player.stop_ambient();
-                    false
-                }
-            }
-        } else {
-            false
-        };
+        if let Some(ref playlist) = self.ambient_playlist {
+            // Playlist mode: advance to next track
+            let next_idx = (self.ambient_playlist_index + 1) % playlist.len();
+            let next_track = &playlist[next_idx];
 
-        // Apply ambient volume now that ambient has been re-created
-        if replay_ok {
-            self.apply_ambient_volume();
+            let part_key = next_track
+                .media
+                .first()
+                .and_then(|m| m.parts.first())
+                .map(|p| p.key.clone());
+
+            let pk_str = match &part_key {
+                Some(key) => key.as_str(),
+                None => {
+                    tracing::warn!(
+                        track = %next_track.title,
+                        "Ambient playlist: track has no media parts, skipping"
+                    );
+                    // Skip this track, advance index
+                    self.ambient_playlist_index = next_idx;
+                    return;
+                }
+            };
+
+            let stream_url = self.plex_client.stream_url(pk_str);
+            let track_name = next_track.title.clone();
+
+            // Update state
+            self.ambient_playlist_index = next_idx;
+            self.ambient_part_key = part_key;
+
+            tracing::info!(
+                channel = "ambient",
+                track = %track_name,
+                index = next_idx,
+                "Ambient playlist: advancing to next track"
+            );
+
+            // Spawn background download for next track
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.ambient_download_rx = Some(rx);
+            std::thread::spawn(move || {
+                let result = Player::download_track(&stream_url)
+                    .map(|bytes| (bytes, track_name));
+                let _ = tx.send(result);
+            });
+        } else {
+            // Single-track mode: replay from cached bytes
+            let initial_volume = self.ambient_volume * self.master_volume;
+            let replay_ok = if let Some(player) = &mut self.player {
+                match player.replay_ambient(initial_volume) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::error!(
+                            channel = "ambient",
+                            "Ambient loop restart failed: {}, stopping ambient", e
+                        );
+                        player.stop_ambient();
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+
+            if replay_ok {
+                self.apply_ambient_volume();
+            }
         }
     }
 
@@ -1467,43 +1546,122 @@ impl App {
     /// Handle keyboard input when the browser overlay is open.
     ///
     /// Routes j/k for navigation, Enter to drill in or select, Esc/Backspace
-    /// to go back or close, and q to close. All other keys are silently
+    /// to go back or close, and q to close. In Artists state, printable
+    /// characters are treated as search input. All other keys are silently
     /// consumed (browser captures all input).
     async fn handle_browser_key(&mut self, code: KeyCode) -> Result<()> {
+        // In Artists state, handle character input for search filtering
+        if let BrowserState::Artists { search_query, all_artists, filtered_indices, list_state, .. } = &mut self.browser_state {
+            match code {
+                KeyCode::Char(c) if c != 'j' && c != 'k' && c != 'q' || !search_query.is_empty() => {
+                    // When search_query is non-empty, ALL chars go to search (including j/k/q).
+                    // When empty, j/k/q retain their navigation/quit meaning.
+                    search_query.push(c);
+                    // Refilter
+                    let query_lower = search_query.to_lowercase();
+                    *filtered_indices = all_artists
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, a)| a.title.to_lowercase().contains(&query_lower))
+                        .map(|(i, _)| i)
+                        .collect();
+                    list_state.select(if filtered_indices.is_empty() { None } else { Some(0) });
+                    return Ok(());
+                }
+                KeyCode::Backspace => {
+                    if !search_query.is_empty() {
+                        search_query.pop();
+                        // Refilter
+                        if search_query.is_empty() {
+                            *filtered_indices = (0..all_artists.len()).collect();
+                        } else {
+                            let query_lower = search_query.to_lowercase();
+                            *filtered_indices = all_artists
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, a)| a.title.to_lowercase().contains(&query_lower))
+                                .map(|(i, _)| i)
+                                .collect();
+                        }
+                        list_state.select(if filtered_indices.is_empty() { None } else { Some(0) });
+                        return Ok(());
+                    }
+                    // search_query is empty, Backspace goes back to TopLevel (fall through below)
+                }
+                _ => {} // Fall through to common handling
+            }
+        }
+
         match code {
             KeyCode::Char('j') | KeyCode::Down => self.browser_move_down(),
             KeyCode::Char('k') | KeyCode::Up => self.browser_move_up(),
             KeyCode::Enter => {
-                // Check state and dispatch -- extract data before async call
-                // to avoid borrow conflicts (Pitfall 6 from research).
+                // Extract action data before async call to avoid borrow conflicts
                 let action = match &self.browser_state {
-                    BrowserState::Sections { sections, list_state } => {
+                    BrowserState::TopLevel { list_state } => {
+                        list_state.selected().map(|idx| ("top_level".to_string(), idx.to_string()))
+                    }
+                    BrowserState::Artists { filtered_indices, list_state, .. } => {
                         list_state.selected().and_then(|idx| {
-                            sections.get(idx).map(|s| ("enter_section".to_string(), s.key.clone(), s.title.clone()))
+                            filtered_indices.get(idx).map(|&ai| ("enter_artist".to_string(), ai.to_string()))
                         })
                     }
-                    BrowserState::Tracks { list_state, .. } => {
-                        list_state.selected().map(|idx| ("select_track".to_string(), idx.to_string(), String::new()))
+                    BrowserState::Albums { list_state, .. } => {
+                        list_state.selected().map(|idx| ("enter_album".to_string(), idx.to_string()))
+                    }
+                    BrowserState::ArtistTracks { list_state, .. } => {
+                        list_state.selected().map(|idx| ("select_artist_track".to_string(), idx.to_string()))
+                    }
+                    BrowserState::Playlists { list_state, .. } => {
+                        list_state.selected().map(|idx| ("enter_playlist".to_string(), idx.to_string()))
+                    }
+                    BrowserState::PlaylistTracks { list_state, .. } => {
+                        list_state.selected().map(|idx| ("select_playlist_track".to_string(), idx.to_string()))
                     }
                     BrowserState::Closed => None,
                 };
-                if let Some((action_type, key, title)) = action {
+                if let Some((action_type, key)) = action {
+                    let idx: usize = key.parse().unwrap_or(0);
                     match action_type.as_str() {
-                        "enter_section" => self.browser_enter_section(&key, &title).await?,
-                        "select_track" => {
-                            if let Ok(idx) = key.parse::<usize>() {
-                                self.browser_select_track(idx)?;
-                            }
-                        }
+                        "top_level" => self.browser_enter_top_level_item(idx).await?,
+                        "enter_artist" => self.browser_enter_artist(idx).await?,
+                        "enter_album" => self.browser_enter_album(idx).await?,
+                        "select_artist_track" => self.browser_select_artist_track(idx)?,
+                        "enter_playlist" => self.browser_enter_playlist(idx).await?,
+                        "select_playlist_track" => self.browser_select_playlist_track(idx)?,
                         _ => {}
                     }
                 }
             }
             KeyCode::Esc | KeyCode::Backspace => {
                 match &self.browser_state {
-                    BrowserState::Tracks { .. } => self.browser_back_to_sections(),
-                    BrowserState::Sections { .. } => {
+                    BrowserState::TopLevel { .. } => {
                         self.browser_state = BrowserState::Closed;
+                    }
+                    BrowserState::Artists { .. } => {
+                        // Back to TopLevel
+                        let mut list_state = ListState::default();
+                        list_state.select(Some(1)); // Select "Artists" since that's where we came from
+                        self.browser_state = BrowserState::TopLevel { list_state };
+                    }
+                    BrowserState::Albums { section_key, .. } => {
+                        // Back to Artists level -- re-use cached sections to get the section key
+                        let section_key = section_key.clone();
+                        self.browser_back_to_artists(&section_key).await;
+                    }
+                    BrowserState::ArtistTracks { section_key, .. } => {
+                        // Back to Artists level (skip Albums to avoid caching album state)
+                        let section_key = section_key.clone();
+                        self.browser_back_to_artists(&section_key).await;
+                    }
+                    BrowserState::Playlists { .. } => {
+                        let mut list_state = ListState::default();
+                        list_state.select(Some(0)); // Select "Playlists" since that's where we came from
+                        self.browser_state = BrowserState::TopLevel { list_state };
+                    }
+                    BrowserState::PlaylistTracks { .. } => {
+                        // Back to Playlists list
+                        self.browser_back_to_playlists().await;
                     }
                     BrowserState::Closed => {}
                 }
@@ -1516,166 +1674,354 @@ impl App {
         Ok(())
     }
 
-    /// Move selection down in the current browser list (sections or tracks).
+    /// Move selection down in the current browser list.
     fn browser_move_down(&mut self) {
-        match &mut self.browser_state {
-            BrowserState::Sections { sections, list_state } => {
-                let len = sections.len();
-                if len == 0 { return; }
-                let current = list_state.selected().unwrap_or(0);
-                let next = if current >= len - 1 { 0 } else { current + 1 };
-                list_state.select(Some(next));
-            }
-            BrowserState::Tracks { tracks, list_state, .. } => {
-                let len = tracks.len();
-                if len == 0 { return; }
-                let current = list_state.selected().unwrap_or(0);
-                let next = if current >= len - 1 { 0 } else { current + 1 };
-                list_state.select(Some(next));
-            }
-            BrowserState::Closed => {}
-        }
+        let (list_state, len) = match &mut self.browser_state {
+            BrowserState::TopLevel { list_state } => (list_state, 2usize), // Playlists, Artists
+            BrowserState::Artists { filtered_indices, list_state, .. } => (list_state, filtered_indices.len()),
+            BrowserState::Albums { albums, list_state, .. } => (list_state, albums.len()),
+            BrowserState::ArtistTracks { tracks, list_state, .. } => (list_state, tracks.len() + 1), // +1 for Play All
+            BrowserState::Playlists { playlists, list_state, .. } => (list_state, playlists.len()),
+            BrowserState::PlaylistTracks { tracks, list_state, .. } => (list_state, tracks.len() + 1), // +1 for Play All
+            BrowserState::Closed => return,
+        };
+        if len == 0 { return; }
+        let current = list_state.selected().unwrap_or(0);
+        let next = if current >= len - 1 { 0 } else { current + 1 };
+        list_state.select(Some(next));
     }
 
-    /// Move selection up in the current browser list (sections or tracks).
+    /// Move selection up in the current browser list.
     fn browser_move_up(&mut self) {
-        match &mut self.browser_state {
-            BrowserState::Sections { sections, list_state } => {
-                let len = sections.len();
-                if len == 0 { return; }
-                let current = list_state.selected().unwrap_or(0);
-                let prev = if current == 0 { len - 1 } else { current - 1 };
-                list_state.select(Some(prev));
-            }
-            BrowserState::Tracks { tracks, list_state, .. } => {
-                let len = tracks.len();
-                if len == 0 { return; }
-                let current = list_state.selected().unwrap_or(0);
-                let prev = if current == 0 { len - 1 } else { current - 1 };
-                list_state.select(Some(prev));
-            }
-            BrowserState::Closed => {}
-        }
+        let (list_state, len) = match &mut self.browser_state {
+            BrowserState::TopLevel { list_state } => (list_state, 2usize),
+            BrowserState::Artists { filtered_indices, list_state, .. } => (list_state, filtered_indices.len()),
+            BrowserState::Albums { albums, list_state, .. } => (list_state, albums.len()),
+            BrowserState::ArtistTracks { tracks, list_state, .. } => (list_state, tracks.len() + 1),
+            BrowserState::Playlists { playlists, list_state, .. } => (list_state, playlists.len()),
+            BrowserState::PlaylistTracks { tracks, list_state, .. } => (list_state, tracks.len() + 1),
+            BrowserState::Closed => return,
+        };
+        if len == 0 { return; }
+        let current = list_state.selected().unwrap_or(0);
+        let prev = if current == 0 { len - 1 } else { current - 1 };
+        list_state.select(Some(prev));
     }
 
-    /// Open the ambient track browser by fetching (or using cached) music
-    /// library sections.
+    /// Open the ambient track browser at the top-level choice (Playlists / Artists).
     async fn open_ambient_browser(&mut self) -> Result<()> {
-        // Use cached sections if available (sections rarely change)
-        let music_sections = if let Some(ref cached) = self.cached_sections {
-            cached.clone()
-        } else {
-            let all_sections = self.plex_client.fetch_library_sections().await?;
-            let music: Vec<plex::LibrarySection> = all_sections
-                .into_iter()
-                .filter(|s| s.section_type == "artist")
-                .collect();
-            self.cached_sections = Some(music.clone());
-            music
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+        self.browser_state = BrowserState::TopLevel { list_state };
+        Ok(())
+    }
+
+    /// Enter the selected top-level item (Playlists or Artists).
+    async fn browser_enter_top_level_item(&mut self, idx: usize) -> Result<()> {
+        match idx {
+            0 => {
+                // Playlists
+                let playlists = self.plex_client.fetch_playlists().await?;
+                if playlists.is_empty() {
+                    tracing::warn!("No audio playlists found");
+                    return Ok(());
+                }
+                let mut list_state = ListState::default();
+                list_state.select(Some(0));
+                self.browser_state = BrowserState::Playlists { playlists, list_state };
+            }
+            1 => {
+                // Artists -- need a music section key
+                let music_sections = if let Some(ref cached) = self.cached_sections {
+                    cached.clone()
+                } else {
+                    let all_sections = self.plex_client.fetch_library_sections().await?;
+                    let music: Vec<plex::LibrarySection> = all_sections
+                        .into_iter()
+                        .filter(|s| s.section_type == "artist")
+                        .collect();
+                    self.cached_sections = Some(music.clone());
+                    music
+                };
+
+                let section = match music_sections.first() {
+                    Some(s) => s,
+                    None => {
+                        tracing::warn!("No music library sections found");
+                        return Ok(());
+                    }
+                };
+
+                let section_key = section.key.clone();
+                let artists = self.plex_client.fetch_section_artists(&section_key).await?;
+                if artists.is_empty() {
+                    tracing::warn!("No artists found in section");
+                    return Ok(());
+                }
+
+                let filtered_indices: Vec<usize> = (0..artists.len()).collect();
+                let mut list_state = ListState::default();
+                list_state.select(Some(0));
+
+                self.browser_state = BrowserState::Artists {
+                    section_key,
+                    all_artists: artists,
+                    filtered_indices,
+                    search_query: String::new(),
+                    list_state,
+                };
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Enter the selected artist -- fetch their albums.
+    async fn browser_enter_artist(&mut self, artist_index: usize) -> Result<()> {
+        let (section_key, artist_name, rating_key) = match &self.browser_state {
+            BrowserState::Artists { section_key, all_artists, .. } => {
+                match all_artists.get(artist_index) {
+                    Some(a) => (section_key.clone(), a.title.clone(), a.rating_key.clone()),
+                    None => return Ok(()),
+                }
+            }
+            _ => return Ok(()),
         };
 
-        if music_sections.is_empty() {
-            tracing::warn!("No music library sections found on server");
+        let albums = self.plex_client.fetch_artist_albums(&rating_key).await?;
+        if albums.is_empty() {
+            tracing::warn!(artist = %artist_name, "No albums found for artist");
             return Ok(());
         }
 
         let mut list_state = ListState::default();
         list_state.select(Some(0));
-
-        self.browser_state = BrowserState::Sections {
-            sections: music_sections,
+        self.browser_state = BrowserState::Albums {
+            section_key,
+            artist_name,
+            albums,
             list_state,
         };
         Ok(())
     }
 
-    /// Fetch tracks for the selected section and transition to the Tracks
-    /// browser level.
-    async fn browser_enter_section(&mut self, section_key: &str, section_title: &str) -> Result<()> {
-        let tracks = self.plex_client.fetch_section_tracks(section_key).await?;
+    /// Enter the selected album -- fetch its tracks.
+    async fn browser_enter_album(&mut self, album_index: usize) -> Result<()> {
+        let (section_key, artist_name, album_title, rating_key) = match &self.browser_state {
+            BrowserState::Albums { section_key, artist_name, albums, .. } => {
+                match albums.get(album_index) {
+                    Some(a) => (section_key.clone(), artist_name.clone(), a.title.clone(), a.rating_key.clone()),
+                    None => return Ok(()),
+                }
+            }
+            _ => return Ok(()),
+        };
 
+        let tracks = self.plex_client.fetch_album_tracks(&rating_key).await?;
         if tracks.is_empty() {
-            tracing::warn!(section = %section_title, "No tracks found in section");
+            tracing::warn!(album = %album_title, "No tracks found in album");
             return Ok(());
         }
 
         let mut list_state = ListState::default();
         list_state.select(Some(0));
-
-        self.browser_state = BrowserState::Tracks {
-            section_title: section_title.to_string(),
+        self.browser_state = BrowserState::ArtistTracks {
+            section_key,
+            album_title,
+            artist_name,
             tracks,
             list_state,
         };
         Ok(())
     }
 
-    /// Select a track from the browser, start an ambient download using the
-    /// existing background thread + mpsc pattern, and close the browser.
-    fn browser_select_track(&mut self, idx: usize) -> Result<()> {
-        // Extract track data from browser state before modifying it.
-        // Also capture part_key as an owned String for session persistence.
-        let (stream_url, track_name, part_key) = {
-            let tracks = match &self.browser_state {
-                BrowserState::Tracks { tracks, .. } => tracks,
-                _ => return Ok(()),
-            };
-            let track = match tracks.get(idx) {
-                Some(t) => t,
-                None => return Ok(()),
-            };
-            let pk = track
-                .media
-                .first()
-                .and_then(|m| m.parts.first())
-                .map(|p| p.key.clone());
-            let pk_str = match &pk {
-                Some(key) => key.as_str(),
-                None => {
-                    tracing::warn!(
-                        track = %track.title,
-                        media_count = track.media.len(),
-                        "Browser track has no media parts -- cannot construct stream URL"
-                    );
-                    return Ok(());
+    /// Select a track from the ArtistTracks browser level.
+    /// Index 0 = "Play All", index > 0 = individual track at tracks[idx-1].
+    fn browser_select_artist_track(&mut self, idx: usize) -> Result<()> {
+        let tracks = match &self.browser_state {
+            BrowserState::ArtistTracks { tracks, .. } => tracks.clone(),
+            _ => return Ok(()),
+        };
+        if idx == 0 {
+            // Play All
+            self.start_ambient_play_all(tracks)?;
+        } else {
+            // Individual track at idx-1
+            let track_idx = idx - 1;
+            self.browser_select_single_ambient_track(&tracks, track_idx)?;
+        }
+        self.browser_state = BrowserState::Closed;
+        Ok(())
+    }
+
+    /// Enter the selected playlist -- fetch its tracks.
+    async fn browser_enter_playlist(&mut self, playlist_index: usize) -> Result<()> {
+        let (rating_key, playlist_title) = match &self.browser_state {
+            BrowserState::Playlists { playlists, list_state: _ } => {
+                match playlists.get(playlist_index) {
+                    Some(p) => (p.rating_key.clone(), p.title.clone()),
+                    None => return Ok(()),
                 }
-            };
-            (self.plex_client.stream_url(pk_str), track.title.clone(), pk)
+            }
+            _ => return Ok(()),
         };
 
-        // Store the part_key for session persistence (PERSIST-01)
+        let tracks = self.plex_client.fetch_tracks(&rating_key).await?;
+        if tracks.is_empty() {
+            tracing::warn!(playlist = %playlist_title, "No tracks found in playlist");
+            return Ok(());
+        }
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+        self.browser_state = BrowserState::PlaylistTracks {
+            playlist_title,
+            tracks,
+            list_state,
+        };
+        Ok(())
+    }
+
+    /// Select a track from the PlaylistTracks browser level.
+    /// Index 0 = "Play All", index > 0 = individual track at tracks[idx-1].
+    fn browser_select_playlist_track(&mut self, idx: usize) -> Result<()> {
+        let tracks = match &self.browser_state {
+            BrowserState::PlaylistTracks { tracks, .. } => tracks.clone(),
+            _ => return Ok(()),
+        };
+        if idx == 0 {
+            self.start_ambient_play_all(tracks)?;
+        } else {
+            let track_idx = idx - 1;
+            self.browser_select_single_ambient_track(&tracks, track_idx)?;
+        }
+        self.browser_state = BrowserState::Closed;
+        Ok(())
+    }
+
+    /// Start ambient "Play All" mode: download first track, store full list.
+    fn start_ambient_play_all(&mut self, tracks: Vec<plex::Track>) -> Result<()> {
+        if tracks.is_empty() {
+            return Ok(());
+        }
+        // Start downloading the first track
+        let first_track = &tracks[0];
+        let part_key = first_track
+            .media
+            .first()
+            .and_then(|m| m.parts.first())
+            .map(|p| p.key.clone());
+        let pk_str = match &part_key {
+            Some(key) => key.as_str(),
+            None => {
+                tracing::warn!(track = %first_track.title, "Play All: first track has no media parts");
+                return Ok(());
+            }
+        };
+
+        let stream_url = self.plex_client.stream_url(pk_str);
+        let track_name = first_track.title.clone();
+
+        // Store part_key for session persistence
         self.ambient_part_key = part_key;
 
-        tracing::info!(channel = "ambient", track = %track_name, "Browser: starting ambient download");
+        // Store the full playlist for sequential playback
+        self.ambient_playlist = Some(tracks);
+        self.ambient_playlist_index = 0;
 
-        // Spawn background download thread (same pattern as start_ambient_from_selected)
+        tracing::info!(channel = "ambient", track = %track_name, "Play All: starting ambient download");
+
         let (tx, rx) = std::sync::mpsc::channel();
         self.ambient_download_rx = Some(rx);
-
         std::thread::spawn(move || {
             let result = Player::download_track(&stream_url)
                 .map(|bytes| (bytes, track_name));
             let _ = tx.send(result);
         });
 
-        // Close browser
-        self.browser_state = BrowserState::Closed;
         Ok(())
     }
 
-    /// Go back from the Tracks browser level to the Sections level,
-    /// restoring cached sections.
-    fn browser_back_to_sections(&mut self) {
-        if let Some(ref sections) = self.cached_sections {
-            let mut list_state = ListState::default();
-            list_state.select(Some(0));
-            self.browser_state = BrowserState::Sections {
-                sections: sections.clone(),
-                list_state,
-            };
-        } else {
-            // No cached sections -- just close (should not happen in practice)
-            self.browser_state = BrowserState::Closed;
+    /// Select a single ambient track from a track list (not Play All).
+    /// Sets ambient_playlist to None for single-track repeat behavior.
+    fn browser_select_single_ambient_track(&mut self, tracks: &[plex::Track], track_idx: usize) -> Result<()> {
+        let track = match tracks.get(track_idx) {
+            Some(t) => t,
+            None => return Ok(()),
+        };
+        let pk = track
+            .media
+            .first()
+            .and_then(|m| m.parts.first())
+            .map(|p| p.key.clone());
+        let pk_str = match &pk {
+            Some(key) => key.as_str(),
+            None => {
+                tracing::warn!(
+                    track = %track.title,
+                    "Browser track has no media parts -- cannot construct stream URL"
+                );
+                return Ok(());
+            }
+        };
+
+        let stream_url = self.plex_client.stream_url(pk_str);
+        let track_name = track.title.clone();
+
+        // Store part_key for session persistence
+        self.ambient_part_key = pk;
+
+        // Clear ambient playlist -- single-track repeat mode
+        self.ambient_playlist = None;
+        self.ambient_playlist_index = 0;
+
+        tracing::info!(channel = "ambient", track = %track_name, "Browser: starting ambient download");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ambient_download_rx = Some(rx);
+        std::thread::spawn(move || {
+            let result = Player::download_track(&stream_url)
+                .map(|bytes| (bytes, track_name));
+            let _ = tx.send(result);
+        });
+
+        Ok(())
+    }
+
+    /// Navigate back to the Artists browser level (re-fetches artists from cache).
+    async fn browser_back_to_artists(&mut self, section_key: &str) {
+        match self.plex_client.fetch_section_artists(section_key).await {
+            Ok(artists) => {
+                let filtered_indices: Vec<usize> = (0..artists.len()).collect();
+                let mut list_state = ListState::default();
+                list_state.select(if artists.is_empty() { None } else { Some(0) });
+                self.browser_state = BrowserState::Artists {
+                    section_key: section_key.to_string(),
+                    all_artists: artists,
+                    filtered_indices,
+                    search_query: String::new(),
+                    list_state,
+                };
+            }
+            Err(e) => {
+                tracing::error!("Failed to re-fetch artists on back navigation: {}", e);
+                self.browser_state = BrowserState::Closed;
+            }
+        }
+    }
+
+    /// Navigate back to the Playlists browser level (re-fetches playlists).
+    async fn browser_back_to_playlists(&mut self) {
+        match self.plex_client.fetch_playlists().await {
+            Ok(playlists) => {
+                let mut list_state = ListState::default();
+                list_state.select(if playlists.is_empty() { None } else { Some(0) });
+                self.browser_state = BrowserState::Playlists { playlists, list_state };
+            }
+            Err(e) => {
+                tracing::error!("Failed to re-fetch playlists on back navigation: {}", e);
+                self.browser_state = BrowserState::Closed;
+            }
         }
     }
 
