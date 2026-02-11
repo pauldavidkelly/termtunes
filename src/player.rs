@@ -393,6 +393,15 @@ impl Player {
         self.ambient_sink.as_ref().is_some_and(|s| s.empty())
     }
 
+    /// Returns true if an ambient sink is loaded (regardless of playing state).
+    ///
+    /// Used by App's volume budget to decide whether to include ambient_volume
+    /// in the budget calculation. When no ambient sink exists, main should
+    /// play at full volume without budget scaling.
+    pub fn has_ambient_sink(&self) -> bool {
+        self.ambient_sink.is_some()
+    }
+
     /// Returns true if cached ambient audio data exists (for loop re-decode).
     pub fn has_ambient_data(&self) -> bool {
         self.ambient_audio_data.is_some()

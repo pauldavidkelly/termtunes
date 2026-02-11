@@ -1214,18 +1214,45 @@ impl App {
     ///
     /// Per user decision: when volumes exceed budget, auto-scale both
     /// proportionally to fit. Master volume applies AFTER budget enforcement.
+    ///
+    /// Budget only activates when an ambient sink is actually loaded. When
+    /// no ambient is playing, main gets its full saved_volume -- the budget
+    /// should not penalize main volume just because ambient_volume has a
+    /// non-zero default.
     fn apply_volume_budget(&mut self) {
-        let sum = self.saved_volume + self.ambient_volume;
+        let ambient_active = self
+            .player
+            .as_ref()
+            .is_some_and(|p| p.has_ambient_sink());
+
+        let effective_ambient = if ambient_active {
+            self.ambient_volume
+        } else {
+            0.0
+        };
+
+        let sum = self.saved_volume + effective_ambient;
         let (main_budgeted, ambient_budgeted) = if sum > 1.0 {
             let scale = 1.0 / sum;
-            (self.saved_volume * scale, self.ambient_volume * scale)
+            (self.saved_volume * scale, effective_ambient * scale)
         } else {
-            (self.saved_volume, self.ambient_volume)
+            (self.saved_volume, effective_ambient)
         };
 
         // Apply master volume after budget enforcement
         let main_final = main_budgeted * self.master_volume;
         let ambient_final = ambient_budgeted * self.master_volume;
+
+        tracing::debug!(
+            saved_volume = self.saved_volume,
+            ambient_volume = self.ambient_volume,
+            ambient_active = ambient_active,
+            effective_ambient = effective_ambient,
+            sum = sum,
+            main_final = main_final,
+            ambient_final = ambient_final,
+            "Volume budget applied"
+        );
 
         if let Some(player) = &self.player {
             player.set_main_volume(main_final);
@@ -1261,30 +1288,40 @@ impl App {
     /// Per user decision: brief silence between loops is acceptable --
     /// prioritize memory safety over gapless playback.
     fn check_ambient_loop(&mut self) {
-        if let Some(player) = &mut self.player {
-            if player.is_ambient_finished() && player.has_ambient_data() {
-                // Compute budget-enforced ambient volume
-                let sum = self.saved_volume + self.ambient_volume;
-                let ambient_effective = if sum > 1.0 {
-                    (self.ambient_volume / sum) * self.master_volume
-                } else {
-                    self.ambient_volume * self.master_volume
-                };
+        // Check if ambient needs to loop (must release player borrow before
+        // calling apply_volume_budget, so we check and replay in separate steps)
+        let needs_replay = self
+            .player
+            .as_ref()
+            .is_some_and(|p| p.is_ambient_finished() && p.has_ambient_data());
 
-                match player.replay_ambient(ambient_effective) {
-                    Ok(()) => {
-                        // Loop restarted successfully -- no user-visible action needed
-                    }
-                    Err(e) => {
-                        // Failure isolation: log error, stop ambient, keep main playing
-                        tracing::error!(
-                            channel = "ambient",
-                            "Ambient loop restart failed: {}, stopping ambient", e
-                        );
-                        player.stop_ambient();
-                    }
+        if !needs_replay {
+            return;
+        }
+
+        // Pass raw ambient volume for initial sink creation; apply_volume_budget
+        // will immediately correct both sinks afterward.
+        let initial_volume = self.ambient_volume * self.master_volume;
+        let replay_ok = if let Some(player) = &mut self.player {
+            match player.replay_ambient(initial_volume) {
+                Ok(()) => true,
+                Err(e) => {
+                    // Failure isolation: log error, stop ambient, keep main playing
+                    tracing::error!(
+                        channel = "ambient",
+                        "Ambient loop restart failed: {}, stopping ambient", e
+                    );
+                    player.stop_ambient();
+                    false
                 }
             }
+        } else {
+            false
+        };
+
+        // Apply budget to both sinks now that ambient has been re-created
+        if replay_ok {
+            self.apply_volume_budget();
         }
     }
 
@@ -1294,32 +1331,15 @@ impl App {
     /// ambient state, and keep main music playing. Ambient failures never
     /// crash the app or interrupt main playback.
     fn load_ambient_track(&mut self, audio_bytes: Vec<u8>, track_name: String) {
-        // Compute budget-enforced ambient volume for initial sink creation
-        let sum = self.saved_volume + self.ambient_volume;
-        let ambient_effective = if sum > 1.0 {
-            (self.ambient_volume / sum) * self.master_volume
-        } else {
-            self.ambient_volume * self.master_volume
-        };
-
-        tracing::debug!(
-            channel = "ambient",
-            saved_volume = self.saved_volume,
-            ambient_volume = self.ambient_volume,
-            master_volume = self.master_volume,
-            sum = sum,
-            ambient_effective = ambient_effective,
-            "Budget-enforced ambient volume computed"
-        );
+        // Pass raw ambient volume for initial sink creation. The subsequent
+        // apply_volume_budget() call will immediately set the correct
+        // budget-enforced volume on both sinks.
+        let initial_volume = self.ambient_volume * self.master_volume;
 
         if let Some(player) = &mut self.player {
-            match player.load_ambient(audio_bytes, track_name, ambient_effective) {
+            match player.load_ambient(audio_bytes, track_name, initial_volume) {
                 Ok(()) => {
-                    tracing::info!(
-                        channel = "ambient",
-                        volume = ambient_effective,
-                        "Ambient track loaded successfully"
-                    );
+                    tracing::info!(channel = "ambient", "Ambient track loaded successfully");
                     self.error_message = None;
                 }
                 Err(e) => {
@@ -1333,8 +1353,8 @@ impl App {
         }
 
         // Apply volume budget to BOTH sinks after loading ambient.
-        // This ensures the main sink is also adjusted for the budget, matching
-        // the pattern used in check_download_complete() for main track loading.
+        // Now that ambient_sink exists, the budget will include ambient_volume
+        // in the calculation and scale both sinks proportionally if sum > 1.0.
         self.apply_volume_budget();
     }
 
