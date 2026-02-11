@@ -124,6 +124,66 @@ pub struct Part {
 }
 
 // ---------------------------------------------------------------------------
+// Artist types
+// ---------------------------------------------------------------------------
+
+/// A music artist from a Plex library section.
+/// Fetched via GET {server}/library/sections/{key}/all?type=8
+#[derive(Deserialize, Debug, Clone)]
+pub struct Artist {
+    #[serde(rename = "ratingKey")]
+    pub rating_key: String,
+    pub title: String,
+    #[serde(default)]
+    pub thumb: Option<String>,
+}
+
+/// Top-level wrapper for the artist list response.
+#[derive(Deserialize, Debug)]
+pub struct ArtistContainer {
+    #[serde(rename = "MediaContainer")]
+    pub media_container: ArtistMediaContainer,
+}
+
+/// The inner container holding the list of artists.
+#[derive(Deserialize, Debug)]
+pub struct ArtistMediaContainer {
+    #[serde(rename = "Metadata", default)]
+    pub metadata: Vec<Artist>,
+}
+
+// ---------------------------------------------------------------------------
+// Album types
+// ---------------------------------------------------------------------------
+
+/// An album from a Plex artist's children.
+/// Fetched via GET {server}/library/metadata/{ratingKey}/children
+#[derive(Deserialize, Debug, Clone)]
+pub struct Album {
+    #[serde(rename = "ratingKey")]
+    pub rating_key: String,
+    pub title: String,
+    #[serde(default)]
+    pub year: Option<u32>,
+    #[serde(rename = "parentTitle", default)]
+    pub parent_title: Option<String>,
+}
+
+/// Top-level wrapper for the album list response.
+#[derive(Deserialize, Debug)]
+pub struct AlbumContainer {
+    #[serde(rename = "MediaContainer")]
+    pub media_container: AlbumMediaContainer,
+}
+
+/// The inner container holding the list of albums.
+#[derive(Deserialize, Debug)]
+pub struct AlbumMediaContainer {
+    #[serde(rename = "Metadata", default)]
+    pub metadata: Vec<Album>,
+}
+
+// ---------------------------------------------------------------------------
 // Library section types
 // ---------------------------------------------------------------------------
 
@@ -261,6 +321,70 @@ impl PlexClient {
             ))
             .headers(headers)
             .query(&[("type", "10"), ("includeMedia", "1")])
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<TrackContainer>()
+            .await?;
+        Ok(resp.media_container.metadata)
+    }
+
+    /// Fetch all artists in a music library section.
+    ///
+    /// GET {server_url}/library/sections/{section_key}/all?type=8
+    /// type=8 is the Plex content type for artists.
+    pub async fn fetch_section_artists(&self, section_key: &str) -> Result<Vec<Artist>> {
+        let headers = self.server_headers();
+        let resp = self
+            .client
+            .get(format!(
+                "{}/library/sections/{}/all",
+                self.server_url, section_key
+            ))
+            .headers(headers)
+            .query(&[("type", "8")])
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ArtistContainer>()
+            .await?;
+        Ok(resp.media_container.metadata)
+    }
+
+    /// Fetch all albums for an artist by their rating key.
+    ///
+    /// GET {server_url}/library/metadata/{artist_rating_key}/children
+    pub async fn fetch_artist_albums(&self, artist_rating_key: &str) -> Result<Vec<Album>> {
+        let headers = self.server_headers();
+        let resp = self
+            .client
+            .get(format!(
+                "{}/library/metadata/{}/children",
+                self.server_url, artist_rating_key
+            ))
+            .headers(headers)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<AlbumContainer>()
+            .await?;
+        Ok(resp.media_container.metadata)
+    }
+
+    /// Fetch all tracks in an album by its rating key.
+    ///
+    /// GET {server_url}/library/metadata/{album_rating_key}/children?includeMedia=1
+    /// includeMedia=1 ensures Track.media is populated for stream URL construction.
+    pub async fn fetch_album_tracks(&self, album_rating_key: &str) -> Result<Vec<Track>> {
+        let headers = self.server_headers();
+        let resp = self
+            .client
+            .get(format!(
+                "{}/library/metadata/{}/children",
+                self.server_url, album_rating_key
+            ))
+            .headers(headers)
+            .query(&[("includeMedia", "1")])
             .send()
             .await?
             .error_for_status()?
