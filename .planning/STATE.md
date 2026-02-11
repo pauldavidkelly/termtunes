@@ -12,8 +12,8 @@ See: .planning/PROJECT.md (updated 2026-02-11)
 **v1.1 milestone shipped:** 2026-02-11
 **Phases completed:** 9 phases (v1.0: 1-5, v1.1: 6-9)
 **Plans completed:** 16 total (v1.0: 10, v1.1: 6)
-**Status:** Both milestones complete, planning next milestone
-**Last activity:** 2026-02-11 -- Completed v1.1 milestone archival
+**Status:** Both milestones complete + quick tasks in progress
+**Last activity:** 2026-02-11 -- Completed quick task 1 (hierarchical ambient browser)
 
 Progress: v1.0 ✅ 10/10 plans | v1.1 ✅ 6/6 plans
 
@@ -77,6 +77,10 @@ Key v1.1 decisions:
 - **NEW:** Player init guard in check_ambient_download_complete() for ambient-before-main edge case
 - **NEW:** First-use ambient default: (main_volume - 0.30).max(0.0) via Option<f32> None distinction
 - **NEW:** #[serde(default)] per-field for backward-compatible Session struct extension
+- **NEW:** BrowserState expanded from 3 to 7 variants for hierarchical Playlists/Artists navigation
+- **NEW:** Artist search captures all chars when query non-empty (j/k/q become search chars when typing)
+- **NEW:** ambient_playlist/ambient_playlist_index fields for Play All sequential ambient cycling
+- **NEW:** Back from ArtistTracks goes to Artists (not Albums) to avoid caching album state
 
 ### Pending Todos
 
@@ -89,5 +93,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 09-01-PLAN.md (ambient session persistence) -- v1.1 milestone COMPLETE
-Next: All v1.0 and v1.1 plans complete (17/17). Project roadmap fulfilled.
+Stopped at: Completed quick task 1 (hierarchical ambient browser)
+Next: Quick task complete. Hierarchical browser functional with search + Play All.
