@@ -244,7 +244,7 @@ pub struct App {
     visualizer_num_bars: usize,
 
     /// Raw ambient volume setting (0.0 to 1.0), independent of main volume.
-    /// Default: 0.7 (30% lower than default main volume of 1.0, per user decision).
+    /// Default: 0.3 (ambient sits underneath main music at ~30% level).
     ambient_volume: f32,
 
     /// Master volume multiplier applied AFTER budget enforcement.
@@ -306,7 +306,7 @@ impl App {
             visualizer_data: visualizer::create_visualizer_data(visualizer::FFT_SIZE),
             visualizer_state: VisualizerState::new(visualizer::NUM_BARS),
             visualizer_num_bars: visualizer::NUM_BARS,
-            ambient_volume: 0.7,
+            ambient_volume: 0.3,
             master_volume: 1.0,
             ambient_download_rx: None,
             browser_state: BrowserState::Closed,
@@ -1285,10 +1285,10 @@ impl App {
         self.apply_ambient_volume();
     }
 
-    /// Unmute ambient channel by restoring default volume (0.7).
+    /// Unmute ambient channel by restoring default volume (0.3).
     /// Since muting is just volume=0, unmuting restores a reasonable default.
     fn unmute_ambient(&mut self) {
-        self.ambient_volume = 0.7;
+        self.ambient_volume = 0.3;
         self.apply_ambient_volume();
     }
 
