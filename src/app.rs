@@ -229,6 +229,11 @@ pub struct App {
     /// Master volume multiplier applied AFTER budget enforcement.
     /// Scales the combined output. Default: 1.0 (no scaling).
     master_volume: f32,
+
+    /// Channel receiver for completed ambient track downloads.
+    /// The background download thread sends (audio_bytes, track_name) when done.
+    /// Separate from download_rx so ambient downloads don't block main track downloads.
+    ambient_download_rx: Option<std::sync::mpsc::Receiver<Result<(Vec<u8>, String)>>>,
 }
 
 impl App {
@@ -275,6 +280,7 @@ impl App {
             visualizer_num_bars: visualizer::NUM_BARS,
             ambient_volume: 0.7,
             master_volume: 1.0,
+            ambient_download_rx: None,
         }
     }
 
@@ -418,6 +424,9 @@ impl App {
 
             // Check for completed downloads (non-blocking)
             self.check_download_complete()?;
+
+            // Check for completed ambient downloads (non-blocking)
+            self.check_ambient_download_complete();
 
             // Auto-advance to next track when current track finishes.
             // Uses advance_track which respects repeat mode (One, All, Off).
@@ -1312,9 +1321,14 @@ impl App {
 
     /// TEMPORARY: Start ambient playback using the currently selected track.
     ///
-    /// Downloads the selected track and loads it as the ambient channel.
-    /// This is a synchronous blocking download (acceptable for testing,
-    /// Phase 7 will use async download for the real implementation).
+    /// Spawns a background thread to download the selected track, then the
+    /// event loop polls `check_ambient_download_complete()` to load it as
+    /// the ambient channel when the download finishes.
+    ///
+    /// Uses the same background-thread + mpsc pattern as main track downloads
+    /// (`start_track_download` / `check_download_complete`) to avoid the
+    /// tokio runtime nesting panic that occurs when calling
+    /// `reqwest::blocking` from within an async context.
     ///
     /// TODO(Phase 7): Remove this method when track browser is implemented.
     fn start_ambient_from_selected(&mut self) -> Result<()> {
@@ -1343,25 +1357,61 @@ impl App {
                 tracing::info!(
                     channel = "ambient",
                     track = %track_name,
-                    "Downloading track for ambient playback"
+                    "Starting ambient track download"
                 );
 
-                // Blocking download (acceptable for temp test mechanism)
-                match Player::download_track(&stream_url) {
-                    Ok(audio_bytes) => {
-                        self.load_ambient_track(audio_bytes, track_name);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            channel = "ambient",
-                            "Failed to download ambient track: {}", e
-                        );
-                        // Failure isolated -- main playback unaffected
-                    }
-                }
+                // Spawn background download thread (same pattern as start_track_download)
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.ambient_download_rx = Some(rx);
+
+                std::thread::spawn(move || {
+                    let result = Player::download_track(&stream_url)
+                        .map(|bytes| (bytes, track_name));
+                    let _ = tx.send(result);
+                });
             }
         }
         Ok(())
+    }
+
+    /// Check if a background ambient download has completed.
+    ///
+    /// Uses try_recv on the mpsc channel so it never blocks the event loop.
+    /// When download completes, loads the audio as the ambient channel via
+    /// `load_ambient_track()` with failure isolation.
+    fn check_ambient_download_complete(&mut self) {
+        if let Some(rx) = &self.ambient_download_rx {
+            match rx.try_recv() {
+                Ok(Ok((audio_bytes, track_name))) => {
+                    tracing::info!(
+                        channel = "ambient",
+                        track = %track_name,
+                        size = audio_bytes.len(),
+                        "Ambient download complete, loading"
+                    );
+                    self.ambient_download_rx = None;
+                    self.load_ambient_track(audio_bytes, track_name);
+                }
+                Ok(Err(e)) => {
+                    tracing::error!(
+                        channel = "ambient",
+                        "Failed to download ambient track: {}", e
+                    );
+                    // Failure isolated -- main playback unaffected
+                    self.ambient_download_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Download still in progress -- keep waiting
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    tracing::error!(
+                        channel = "ambient",
+                        "Ambient download thread disconnected unexpectedly"
+                    );
+                    self.ambient_download_rx = None;
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
