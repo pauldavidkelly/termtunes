@@ -1294,7 +1294,7 @@ impl App {
     /// ambient state, and keep main music playing. Ambient failures never
     /// crash the app or interrupt main playback.
     fn load_ambient_track(&mut self, audio_bytes: Vec<u8>, track_name: String) {
-        // Compute budget-enforced ambient volume
+        // Compute budget-enforced ambient volume for initial sink creation
         let sum = self.saved_volume + self.ambient_volume;
         let ambient_effective = if sum > 1.0 {
             (self.ambient_volume / sum) * self.master_volume
@@ -1302,10 +1302,24 @@ impl App {
             self.ambient_volume * self.master_volume
         };
 
+        tracing::debug!(
+            channel = "ambient",
+            saved_volume = self.saved_volume,
+            ambient_volume = self.ambient_volume,
+            master_volume = self.master_volume,
+            sum = sum,
+            ambient_effective = ambient_effective,
+            "Budget-enforced ambient volume computed"
+        );
+
         if let Some(player) = &mut self.player {
             match player.load_ambient(audio_bytes, track_name, ambient_effective) {
                 Ok(()) => {
-                    tracing::info!(channel = "ambient", "Ambient track loaded successfully");
+                    tracing::info!(
+                        channel = "ambient",
+                        volume = ambient_effective,
+                        "Ambient track loaded successfully"
+                    );
                     self.error_message = None;
                 }
                 Err(e) => {
@@ -1317,6 +1331,11 @@ impl App {
                 }
             }
         }
+
+        // Apply volume budget to BOTH sinks after loading ambient.
+        // This ensures the main sink is also adjusted for the budget, matching
+        // the pattern used in check_download_complete() for main track loading.
+        self.apply_volume_budget();
     }
 
     /// TEMPORARY: Start ambient playback using the currently selected track.
