@@ -543,9 +543,9 @@ impl App {
                         }
                     }
 
-                    // Apply volume budget to ensure the new main_sink gets
-                    // the budget-enforced volume (corrects for ambient if active).
-                    self.apply_volume_budget();
+                    // Apply main volume to the fresh main_sink.
+                    // Main and ambient are independent -- only main needs updating here.
+                    self.apply_main_volume();
 
                     self.download_rx = None;
                 }
@@ -1030,8 +1030,8 @@ impl App {
                         }
                     }
                 }
-                // Apply volume budget to the fresh main_sink
-                self.apply_volume_budget();
+                // Apply main volume to the fresh main_sink (independent of ambient)
+                self.apply_main_volume();
                 Ok(true)
             }
             RepeatMode::All => {
@@ -1191,81 +1191,44 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
-    // Volume control (with budget enforcement)
+    // Volume control (independent main + ambient channels)
     // -----------------------------------------------------------------------
 
-    /// Increase main volume and apply budget enforcement.
+    /// Increase main volume. Only affects main channel -- ambient is independent.
     ///
-    /// Volume is managed by App (not Player) to enable budget enforcement.
-    /// The saved_volume field is the authoritative source for main channel
-    /// raw volume. Player sinks receive computed values after budget + master.
+    /// Volume is managed by App (not Player) so we can track the user's
+    /// intended setting separately from the effective sink value.
     fn volume_up(&mut self) {
         self.saved_volume = (self.saved_volume + 0.05).min(1.0);
-        self.apply_volume_budget();
+        self.apply_main_volume();
     }
 
-    /// Decrease main volume and apply budget enforcement.
+    /// Decrease main volume. Only affects main channel -- ambient is independent.
     fn volume_down(&mut self) {
         self.saved_volume = (self.saved_volume - 0.05).max(0.0);
-        self.apply_volume_budget();
+        self.apply_main_volume();
     }
 
-    /// Enforce volume budget: main + ambient <= 1.0, then scale by master.
+    /// Apply main volume to the main sink only.
     ///
-    /// Per user decision: when volumes exceed budget, auto-scale both
-    /// proportionally to fit. Master volume applies AFTER budget enforcement.
-    ///
-    /// Budget only activates when an ambient sink is actually loaded. When
-    /// no ambient is playing, main gets its full saved_volume -- the budget
-    /// should not penalize main volume just because ambient_volume has a
-    /// non-zero default.
-    fn apply_volume_budget(&mut self) {
-        let ambient_active = self
-            .player
-            .as_ref()
-            .is_some_and(|p| p.has_ambient_sink());
-
-        let effective_ambient = if ambient_active {
-            self.ambient_volume
-        } else {
-            0.0
-        };
-
-        let sum = self.saved_volume + effective_ambient;
-        let (main_budgeted, ambient_budgeted) = if sum > 1.0 {
-            let scale = 1.0 / sum;
-            (self.saved_volume * scale, effective_ambient * scale)
-        } else {
-            (self.saved_volume, effective_ambient)
-        };
-
-        // Apply master volume after budget enforcement
-        let main_final = main_budgeted * self.master_volume;
-        let ambient_final = ambient_budgeted * self.master_volume;
-
-        tracing::info!(
-            saved_volume = self.saved_volume,
-            ambient_volume = self.ambient_volume,
-            ambient_active = ambient_active,
-            effective_ambient = effective_ambient,
-            sum = sum,
-            main_final = main_final,
-            ambient_final = ambient_final,
-            "Volume budget applied"
-        );
-
-        if let Some(player) = &mut self.player {
+    /// Main and ambient volumes are independent -- changing main volume does
+    /// not affect ambient, and vice versa. Each channel's volume is scaled
+    /// by master_volume.
+    fn apply_main_volume(&self) {
+        let main_final = self.saved_volume * self.master_volume;
+        if let Some(player) = &self.player {
             player.set_main_volume(main_final);
-            player.set_ambient_volume(ambient_final);
+        }
+    }
 
-            // Verify the volume was actually applied by reading it back
-            let ambient_readback = player.ambient_volume();
-            tracing::info!(
-                main_sink_volume = player.volume(),
-                ambient_sink_volume = ?ambient_readback,
-                ambient_sink_exists = ambient_readback.is_some(),
-                "Volume verification after budget"
-            );
+    /// Apply ambient volume to the ambient sink only.
+    ///
+    /// Recreates the ambient sink at the target volume since rodio's
+    /// Sink::set_volume() doesn't reliably update ambient audio output.
+    fn apply_ambient_volume(&mut self) {
+        let ambient_final = self.ambient_volume * self.master_volume;
+        if let Some(player) = &mut self.player {
+            player.set_ambient_volume(ambient_final);
         }
     }
 
@@ -1273,14 +1236,14 @@ impl App {
     /// Per user decision: muting is simply volume=0, no separate state.
     fn mute_ambient(&mut self) {
         self.ambient_volume = 0.0;
-        self.apply_volume_budget();
+        self.apply_ambient_volume();
     }
 
     /// Unmute ambient channel by restoring default volume (0.7).
     /// Since muting is just volume=0, unmuting restores a reasonable default.
     fn unmute_ambient(&mut self) {
         self.ambient_volume = 0.7;
-        self.apply_volume_budget();
+        self.apply_ambient_volume();
     }
 
     // -----------------------------------------------------------------------
@@ -1298,7 +1261,7 @@ impl App {
     /// prioritize memory safety over gapless playback.
     fn check_ambient_loop(&mut self) {
         // Check if ambient needs to loop (must release player borrow before
-        // calling apply_volume_budget, so we check and replay in separate steps)
+        // calling apply_ambient_volume, so we check and replay in separate steps)
         let needs_replay = self
             .player
             .as_ref()
@@ -1308,8 +1271,7 @@ impl App {
             return;
         }
 
-        // Pass raw ambient volume for initial sink creation; apply_volume_budget
-        // will immediately correct both sinks afterward.
+        // Pass computed ambient volume for initial sink creation.
         let initial_volume = self.ambient_volume * self.master_volume;
         let replay_ok = if let Some(player) = &mut self.player {
             match player.replay_ambient(initial_volume) {
@@ -1328,9 +1290,9 @@ impl App {
             false
         };
 
-        // Apply budget to both sinks now that ambient has been re-created
+        // Apply ambient volume now that ambient has been re-created
         if replay_ok {
-            self.apply_volume_budget();
+            self.apply_ambient_volume();
         }
     }
 
@@ -1340,9 +1302,7 @@ impl App {
     /// ambient state, and keep main music playing. Ambient failures never
     /// crash the app or interrupt main playback.
     fn load_ambient_track(&mut self, audio_bytes: Vec<u8>, track_name: String) {
-        // Pass raw ambient volume for initial sink creation. The subsequent
-        // apply_volume_budget() call will immediately set the correct
-        // budget-enforced volume on both sinks.
+        // Pass computed ambient volume for initial sink creation.
         let initial_volume = self.ambient_volume * self.master_volume;
 
         if let Some(player) = &mut self.player {
@@ -1361,10 +1321,9 @@ impl App {
             }
         }
 
-        // Apply volume budget to BOTH sinks after loading ambient.
-        // Now that ambient_sink exists, the budget will include ambient_volume
-        // in the calculation and scale both sinks proportionally if sum > 1.0.
-        self.apply_volume_budget();
+        // Apply ambient volume to the newly created ambient sink.
+        // Main and ambient are independent -- only ambient needs updating here.
+        self.apply_ambient_volume();
     }
 
     /// TEMPORARY: Start ambient playback using the currently selected track.
