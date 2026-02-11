@@ -22,3 +22,27 @@ A complete terminal music player for Plex that integrates seamlessly into tmux-b
 
 ---
 
+
+## v1.1 Multi-Channel Audio (Shipped: 2026-02-11)
+
+**Phases completed:** 4 phases (6-9), 6 plans, 21 commits
+
+**Key accomplishments:**
+- Dual-sink audio architecture - Play two independent audio streams (main music + ambient) simultaneously on WSL2 without crackling
+- Track browsing UI - Modal browser with vim-style navigation to select individual tracks from Plex library
+- Independent volume controls - Separate volume management for main and ambient channels with [/] keybindings
+- Pre-mute memory - Volume toggle (m) preserves user's custom volume across mute/unmute and app restarts
+- Session persistence - Ambient track selection, volume, and playback state survive app restarts
+- Continuous looping - Ambient tracks loop indefinitely using manual re-append for stable memory usage
+
+**Delivered:**
+Enhanced TermTunes with multi-channel audio capability, allowing users to layer ambient tracks underneath music playlists for enhanced focus during deep work. All ambient state persists across sessions.
+
+**Stats:**
+- 4,477 lines of Rust code (total codebase)
+- 2-day development cycle (2026-02-10 → 2026-02-11)
+- 100% requirements coverage (27/27 v1.1 requirements)
+- Notable: Independent volume channels replaced proportional budget after 8 iterative WSL2 bug fixes
+
+---
+

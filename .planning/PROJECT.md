@@ -8,22 +8,24 @@ A TUI (Terminal User Interface) music player for Plex Media Server that lives in
 
 Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
 
-## Current Milestone: v1.1 Multi-Channel Audio
+## Current State: v1.1 Shipped
 
-**Goal:** Layer ambient tracks underneath music playlists for enhanced focus during deep work.
+**Latest:** v1.1 Multi-Channel Audio (shipped 2026-02-11)
 
-**Target features:**
-- Browse and select individual tracks from Plex library (not just playlists)
-- Play ambient track on separate channel with auto-loop
-- Independent volume controls for main music and ambient channels
-- Toggle ambient on/off as needed
-- Persist ambient track selection and settings across sessions
-- Small UI panel showing ambient track status
+**Delivered:**
+- Dual-sink audio architecture for simultaneous main music + ambient playback
+- Track browser with vim-style navigation to select individual tracks
+- Independent volume controls ([/] keybindings) with pre-mute memory
+- Ambient status panel showing track name, state, and volume
+- Full session persistence across app restarts
+
+**What's next:** Planning future enhancements (TBD)
 
 ## Requirements
 
 ### Validated
 
+**v1.0 MVP:**
 - ✓ Connect to existing Plex Media Server — v1.0
 - ✓ Display list of available playlists — v1.0
 - ✓ Select and play a playlist — v1.0
@@ -36,15 +38,18 @@ Keep music playback inside the terminal workflow - no context switching to exter
 - ✓ Favorite playlists with quick keybindings (1-9 to instantly start) — v1.0
 - ✓ Local audio playback — v1.0
 
+**v1.1 Multi-Channel Audio:**
+- ✓ Browse and select individual tracks from Plex library — v1.1
+- ✓ Play ambient track on separate audio channel — v1.1
+- ✓ Ambient track auto-loops continuously — v1.1
+- ✓ Independent volume control for ambient channel — v1.1
+- ✓ Toggle ambient channel on/off — v1.1
+- ✓ Ambient track persists across sessions — v1.1
+- ✓ UI panel showing ambient track status — v1.1
+
 ### Active
 
-- [ ] Browse and select individual tracks from Plex library
-- [ ] Play ambient track on separate audio channel
-- [ ] Ambient track auto-loops continuously
-- [ ] Independent volume control for ambient channel
-- [ ] Toggle ambient channel on/off
-- [ ] Ambient track persists across sessions
-- [ ] UI panel showing ambient track status
+(Planning next milestone)
 
 ### Out of Scope
 
@@ -62,12 +67,12 @@ Keep music playback inside the terminal workflow - no context switching to exter
 
 **User profile:** Vim power user with vim-tmux plugin for pane navigation. Keyboard-centric workflow, no mouse usage.
 
-**Current state (v1.0):**
-- 3,507 lines of Rust code
-- Tech stack: ratatui (TUI), rodio (audio), crossterm (terminal), reqwest (HTTP), spectrum-analyzer (FFT)
-- Features: PIN-based Plex auth, playlist browser, full playback controls, favorite hotkeys, shuffle/repeat/seek, tmux integration, session persistence, audio visualizer
+**Current state (v1.1):**
+- 4,477 lines of Rust code
+- Tech stack: ratatui (TUI), rodio (audio with dual-sink), crossterm (terminal), reqwest (HTTP), spectrum-analyzer (FFT)
+- Features: PIN-based Plex auth, playlist browser, track browser, dual-channel audio (main + ambient), independent volume controls, pre-mute memory, full session persistence, audio visualizer
 - Validated on WSL2 and Linux
-- All 42 v1.0 requirements satisfied
+- All 42 v1.0 + 27 v1.1 requirements satisfied (69 total)
 
 ## Constraints
 
@@ -89,6 +94,11 @@ Keep music playback inside the terminal workflow - no context switching to exter
 | Favorite hotkeys (1-9) | Differentiation from other players | ✓ Good — instant playlist access is killer feature |
 | Session persistence | Resume playback across app restarts | ✓ Good — essential for background listening workflow |
 | Tmux status bar file | Show now-playing in tmux status line | ✓ Good — maintains context awareness across panes |
+| Independent volume channels (v1.1) | Replace proportional budget with user-controlled channels | ✓ Good — 8 WSL2 fixes revealed simpler UX, direct control |
+| Dual-sink on shared mixer (v1.1) | Two independent Sinks on same OutputStream.mixer() | ✓ Good — clean isolation, no interference between channels |
+| Manual ambient loop (v1.1) | replay_ambient() from cached bytes vs rodio repeat_infinite | ✓ Good — stable memory, avoids rodio memory leak |
+| Pre-mute memory (v1.1) | Save volume before mute, restore exact value on unmute | ✓ Good — preserves user intent across mute/quit/restart cycles |
+| Sink recreation for ambient volume (v1.1) | Stop + recreate Sink instead of set_volume() | ⚠️ Workaround — rodio bug, but works reliably on WSL2 |
 
 ---
-*Last updated: 2026-02-10 after v1.1 milestone start*
+*Last updated: 2026-02-11 after v1.1 milestone completion*
