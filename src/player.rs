@@ -443,8 +443,28 @@ impl Player {
     /// Set the ambient sink volume, clamped to 0.0..=1.0.
     pub fn set_ambient_volume(&self, vol: f32) {
         if let Some(ref sink) = self.ambient_sink {
+            let before = sink.volume();
             sink.set_volume(vol.clamp(0.0, 1.0));
+            let after = sink.volume();
+            tracing::info!(
+                channel = "ambient",
+                requested = vol,
+                before = before,
+                after = after,
+                "set_ambient_volume called"
+            );
+        } else {
+            tracing::info!(
+                channel = "ambient",
+                requested = vol,
+                "set_ambient_volume: no ambient sink exists"
+            );
         }
+    }
+
+    /// Get the current ambient sink volume, or None if no ambient sink exists.
+    pub fn ambient_volume(&self) -> Option<f32> {
+        self.ambient_sink.as_ref().map(|s| s.volume())
     }
 
     /// Get the name of the currently loaded ambient track, if any.

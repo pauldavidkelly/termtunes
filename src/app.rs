@@ -1259,8 +1259,11 @@ impl App {
             player.set_ambient_volume(ambient_final);
 
             // Verify the volume was actually applied by reading it back
+            let ambient_readback = player.ambient_volume();
             tracing::info!(
                 main_sink_volume = player.volume(),
+                ambient_sink_volume = ?ambient_readback,
+                ambient_sink_exists = ambient_readback.is_some(),
                 "Volume verification after budget"
             );
         }
