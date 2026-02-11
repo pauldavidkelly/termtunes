@@ -85,6 +85,27 @@ impl RepeatMode {
 }
 
 // ---------------------------------------------------------------------------
+// Browser state
+// ---------------------------------------------------------------------------
+
+/// State of the ambient track browser overlay.
+pub enum BrowserState {
+    /// Browser is not visible.
+    Closed,
+    /// Showing music library sections. User picks one to see its tracks.
+    Sections {
+        sections: Vec<plex::LibrarySection>,
+        list_state: ListState,
+    },
+    /// Showing tracks within a selected section. User picks one for ambient.
+    Tracks {
+        section_title: String,
+        tracks: Vec<plex::Track>,
+        list_state: ListState,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // NowPlaying metadata
 // ---------------------------------------------------------------------------
 
@@ -234,6 +255,13 @@ pub struct App {
     /// The background download thread sends (audio_bytes, track_name) when done.
     /// Separate from download_rx so ambient downloads don't block main track downloads.
     ambient_download_rx: Option<std::sync::mpsc::Receiver<Result<(Vec<u8>, String)>>>,
+
+    /// Current state of the ambient track browser overlay.
+    browser_state: BrowserState,
+
+    /// Cached music library sections to avoid re-fetching on every browser open.
+    /// Populated on first open, cleared only on app restart.
+    cached_sections: Option<Vec<plex::LibrarySection>>,
 }
 
 impl App {
@@ -281,6 +309,8 @@ impl App {
             ambient_volume: 0.7,
             master_volume: 1.0,
             ambient_download_rx: None,
+            browser_state: BrowserState::Closed,
+            cached_sections: None,
         }
     }
 
@@ -394,6 +424,16 @@ impl App {
     /// Set the dynamic number of visualizer bars (called by UI based on width).
     pub fn set_visualizer_num_bars(&mut self, n: usize) {
         self.visualizer_num_bars = n.clamp(4, 64);
+    }
+
+    /// Get a reference to the browser state (for UI rendering).
+    pub fn browser_state(&self) -> &BrowserState {
+        &self.browser_state
+    }
+
+    /// Get a mutable reference to the browser state (for ListState rendering).
+    pub fn browser_state_mut(&mut self) -> &mut BrowserState {
+        &mut self.browser_state
     }
 
     /// Get the ambient volume level (0.0 to 1.0).
@@ -570,6 +610,15 @@ impl App {
 
     /// Handle a key press event.
     async fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+        // Browser captures all input when open (except Ctrl+C for emergency quit)
+        if !matches!(self.browser_state, BrowserState::Closed) {
+            if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+                self.running = false;
+                return Ok(());
+            }
+            return self.handle_browser_key(code).await;
+        }
+
         match (code, modifiers) {
             // Quit
             (KeyCode::Char('q'), _) => self.running = false,
@@ -647,12 +696,9 @@ impl App {
                     }
                 }
             }
-            // TEMPORARY: Load selected track as ambient for Phase 6 testing.
-            // Phase 7 replaces this with the track browser ambient selection.
-            (KeyCode::Char('a'), _) => {
-                if matches!(self.view, AppView::Playing | AppView::Tracks) {
-                    self.start_ambient_from_selected()?;
-                }
+            // Open ambient track browser (TRACK-01)
+            (KeyCode::Char('b'), _) => {
+                self.open_ambient_browser().await?;
             }
             // Toggle ambient mute (AUDIO-04)
             (KeyCode::Char('m'), _) => {
@@ -1326,61 +1372,6 @@ impl App {
         self.apply_ambient_volume();
     }
 
-    /// TEMPORARY: Start ambient playback using the currently selected track.
-    ///
-    /// Spawns a background thread to download the selected track, then the
-    /// event loop polls `check_ambient_download_complete()` to load it as
-    /// the ambient channel when the download finishes.
-    ///
-    /// Uses the same background-thread + mpsc pattern as main track downloads
-    /// (`start_track_download` / `check_download_complete`) to avoid the
-    /// tokio runtime nesting panic that occurs when calling
-    /// `reqwest::blocking` from within an async context.
-    ///
-    /// TODO(Phase 7): Remove this method when track browser is implemented.
-    fn start_ambient_from_selected(&mut self) -> Result<()> {
-        if let Some(idx) = self.track_state.selected() {
-            if let Some(track) = self.tracks.get(idx) {
-                let part_key = track
-                    .media
-                    .first()
-                    .and_then(|m| m.parts.first())
-                    .map(|p| p.key.as_str());
-
-                let part_key = match part_key {
-                    Some(key) => key,
-                    None => {
-                        tracing::warn!(
-                            track = %track.title,
-                            "Track has no media parts, cannot play as ambient"
-                        );
-                        return Ok(());
-                    }
-                };
-
-                let stream_url = self.plex_client.stream_url(part_key);
-                let track_name = track.title.clone();
-
-                tracing::info!(
-                    channel = "ambient",
-                    track = %track_name,
-                    "Starting ambient track download"
-                );
-
-                // Spawn background download thread (same pattern as start_track_download)
-                let (tx, rx) = std::sync::mpsc::channel();
-                self.ambient_download_rx = Some(rx);
-
-                std::thread::spawn(move || {
-                    let result = Player::download_track(&stream_url)
-                        .map(|bytes| (bytes, track_name));
-                    let _ = tx.send(result);
-                });
-            }
-        }
-        Ok(())
-    }
-
     /// Check if a background ambient download has completed.
     ///
     /// Uses try_recv on the mpsc channel so it never blocks the event loop.
@@ -1418,6 +1409,217 @@ impl App {
                     self.ambient_download_rx = None;
                 }
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Browser navigation
+    // -----------------------------------------------------------------------
+
+    /// Handle keyboard input when the browser overlay is open.
+    ///
+    /// Routes j/k for navigation, Enter to drill in or select, Esc/Backspace
+    /// to go back or close, and q to close. All other keys are silently
+    /// consumed (browser captures all input).
+    async fn handle_browser_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => self.browser_move_down(),
+            KeyCode::Char('k') | KeyCode::Up => self.browser_move_up(),
+            KeyCode::Enter => {
+                // Check state and dispatch -- extract data before async call
+                // to avoid borrow conflicts (Pitfall 6 from research).
+                let action = match &self.browser_state {
+                    BrowserState::Sections { sections, list_state } => {
+                        list_state.selected().and_then(|idx| {
+                            sections.get(idx).map(|s| ("enter_section".to_string(), s.key.clone(), s.title.clone()))
+                        })
+                    }
+                    BrowserState::Tracks { list_state, .. } => {
+                        list_state.selected().map(|idx| ("select_track".to_string(), idx.to_string(), String::new()))
+                    }
+                    BrowserState::Closed => None,
+                };
+                if let Some((action_type, key, title)) = action {
+                    match action_type.as_str() {
+                        "enter_section" => self.browser_enter_section(&key, &title).await?,
+                        "select_track" => {
+                            if let Ok(idx) = key.parse::<usize>() {
+                                self.browser_select_track(idx)?;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            KeyCode::Esc | KeyCode::Backspace => {
+                match &self.browser_state {
+                    BrowserState::Tracks { .. } => self.browser_back_to_sections(),
+                    BrowserState::Sections { .. } => {
+                        self.browser_state = BrowserState::Closed;
+                    }
+                    BrowserState::Closed => {}
+                }
+            }
+            KeyCode::Char('q') => {
+                self.browser_state = BrowserState::Closed;
+            }
+            _ => {} // Consume all other keys silently
+        }
+        Ok(())
+    }
+
+    /// Move selection down in the current browser list (sections or tracks).
+    fn browser_move_down(&mut self) {
+        match &mut self.browser_state {
+            BrowserState::Sections { sections, list_state } => {
+                let len = sections.len();
+                if len == 0 { return; }
+                let current = list_state.selected().unwrap_or(0);
+                let next = if current >= len - 1 { 0 } else { current + 1 };
+                list_state.select(Some(next));
+            }
+            BrowserState::Tracks { tracks, list_state, .. } => {
+                let len = tracks.len();
+                if len == 0 { return; }
+                let current = list_state.selected().unwrap_or(0);
+                let next = if current >= len - 1 { 0 } else { current + 1 };
+                list_state.select(Some(next));
+            }
+            BrowserState::Closed => {}
+        }
+    }
+
+    /// Move selection up in the current browser list (sections or tracks).
+    fn browser_move_up(&mut self) {
+        match &mut self.browser_state {
+            BrowserState::Sections { sections, list_state } => {
+                let len = sections.len();
+                if len == 0 { return; }
+                let current = list_state.selected().unwrap_or(0);
+                let prev = if current == 0 { len - 1 } else { current - 1 };
+                list_state.select(Some(prev));
+            }
+            BrowserState::Tracks { tracks, list_state, .. } => {
+                let len = tracks.len();
+                if len == 0 { return; }
+                let current = list_state.selected().unwrap_or(0);
+                let prev = if current == 0 { len - 1 } else { current - 1 };
+                list_state.select(Some(prev));
+            }
+            BrowserState::Closed => {}
+        }
+    }
+
+    /// Open the ambient track browser by fetching (or using cached) music
+    /// library sections.
+    async fn open_ambient_browser(&mut self) -> Result<()> {
+        // Use cached sections if available (sections rarely change)
+        let music_sections = if let Some(ref cached) = self.cached_sections {
+            cached.clone()
+        } else {
+            let all_sections = self.plex_client.fetch_library_sections().await?;
+            let music: Vec<plex::LibrarySection> = all_sections
+                .into_iter()
+                .filter(|s| s.section_type == "artist")
+                .collect();
+            self.cached_sections = Some(music.clone());
+            music
+        };
+
+        if music_sections.is_empty() {
+            tracing::warn!("No music library sections found on server");
+            return Ok(());
+        }
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+
+        self.browser_state = BrowserState::Sections {
+            sections: music_sections,
+            list_state,
+        };
+        Ok(())
+    }
+
+    /// Fetch tracks for the selected section and transition to the Tracks
+    /// browser level.
+    async fn browser_enter_section(&mut self, section_key: &str, section_title: &str) -> Result<()> {
+        let tracks = self.plex_client.fetch_section_tracks(section_key).await?;
+
+        if tracks.is_empty() {
+            tracing::warn!(section = %section_title, "No tracks found in section");
+            return Ok(());
+        }
+
+        let mut list_state = ListState::default();
+        list_state.select(Some(0));
+
+        self.browser_state = BrowserState::Tracks {
+            section_title: section_title.to_string(),
+            tracks,
+            list_state,
+        };
+        Ok(())
+    }
+
+    /// Select a track from the browser, start an ambient download using the
+    /// existing background thread + mpsc pattern, and close the browser.
+    fn browser_select_track(&mut self, idx: usize) -> Result<()> {
+        // Extract track data from browser state before modifying it
+        let (stream_url, track_name) = {
+            let tracks = match &self.browser_state {
+                BrowserState::Tracks { tracks, .. } => tracks,
+                _ => return Ok(()),
+            };
+            let track = match tracks.get(idx) {
+                Some(t) => t,
+                None => return Ok(()),
+            };
+            let part_key = track
+                .media
+                .first()
+                .and_then(|m| m.parts.first())
+                .map(|p| p.key.as_str());
+            let part_key = match part_key {
+                Some(key) => key,
+                None => {
+                    tracing::warn!(track = %track.title, "Browser track has no media parts");
+                    return Ok(());
+                }
+            };
+            (self.plex_client.stream_url(part_key), track.title.clone())
+        };
+
+        tracing::info!(channel = "ambient", track = %track_name, "Browser: starting ambient download");
+
+        // Spawn background download thread (same pattern as start_ambient_from_selected)
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.ambient_download_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let result = Player::download_track(&stream_url)
+                .map(|bytes| (bytes, track_name));
+            let _ = tx.send(result);
+        });
+
+        // Close browser
+        self.browser_state = BrowserState::Closed;
+        Ok(())
+    }
+
+    /// Go back from the Tracks browser level to the Sections level,
+    /// restoring cached sections.
+    fn browser_back_to_sections(&mut self) {
+        if let Some(ref sections) = self.cached_sections {
+            let mut list_state = ListState::default();
+            list_state.select(Some(0));
+            self.browser_state = BrowserState::Sections {
+                sections: sections.clone(),
+                list_state,
+            };
+        } else {
+            // No cached sections -- just close (should not happen in practice)
+            self.browser_state = BrowserState::Closed;
         }
     }
 
