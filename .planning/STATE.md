@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-02-10)
 ## Current Position
 
 Phase: 7 of 9 (Ambient Track Selection)
-Plan: 0 of ? in current phase
-Status: Ready for planning
-Last activity: 2026-02-11 -- Completed Phase 6 (dual-sink audio engine validated on WSL2)
+Plan: 1 of 2 in current phase
+Status: Executing
+Last activity: 2026-02-11 -- Completed 07-01-PLAN.md (Plex library browsing API + browser state machine)
 
-Progress: [############............] 12/17 plans (v1.0: 10/10, v1.1: 2/7)
+Progress: [#############...........] 13/17 plans (v1.0: 10/10, v1.1: 3/7)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 12
-- Average duration: ~9 min (06-02 was extended due to iterative debugging)
-- Total execution time: ~1.8 hours
+- Total plans completed: 13
+- Average duration: ~8 min
+- Total execution time: ~1.85 hours
 
 **By Phase:**
 
@@ -33,10 +33,10 @@ Progress: [############............] 12/17 plans (v1.0: 10/10, v1.1: 2/7)
 | 04-tmux-integration-polish | 2/2 | ~4 min | ~2 min |
 | 05-audio-visualizer | 1/1 | ~5 min | ~5 min |
 | 06-dual-sink-audio-engine | 2/2 | ~extended | ~variable |
+| 07-track-browsing-ambient-playback | 1/2 | ~3 min | ~3 min |
 
 **Recent Trend:**
-- Last 5 plans: 04-02 (~2 min), 05-01 (~5 min), 06-01 (~5 min), 06-02 (extended - 8 fix iterations)
-- Note: 06-02 required extensive iterative debugging of rodio volume behavior and volume architecture redesign
+- Last 5 plans: 05-01 (~5 min), 06-01 (~5 min), 06-02 (extended - 8 fix iterations), 07-01 (~3 min)
 
 *Updated after each plan completion*
 
@@ -58,6 +58,10 @@ Key v1.1 decisions:
 - **NEW:** UI must show saved_volume (user intent), not player.volume() (sink value)
 - **NEW:** Logging defaults to info level when RUST_LOG not set (EnvFilter fallback)
 - **VALIDATED:** WSL2 dual-channel audio works cleanly -- fail-fast gate passed
+- **NEW:** 'b' key opens ambient track browser (replacing temporary 'a' from Phase 6)
+- **NEW:** Music library sections cached on App (Option<Vec<LibrarySection>>), refresh only on restart
+- **NEW:** Browser captures ALL input when open (only Ctrl+C escapes for emergency quit)
+- **NEW:** BrowserState enum with associated ListState for two-level modal navigation
 
 ### Pending Todos
 
@@ -70,5 +74,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 06-02-PLAN.md (ambient loop, validation, and volume architecture redesign)
-Next: Phase 7 planning (ambient track selection)
+Stopped at: Completed 07-01-PLAN.md (Plex library browsing API + browser state machine)
+Next: 07-02-PLAN.md (browser UI overlay rendering)
