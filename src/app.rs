@@ -247,6 +247,10 @@ pub struct App {
     /// Default: 0.3 (ambient sits underneath main music at ~30% level).
     ambient_volume: f32,
 
+    /// Ambient volume level before the last mute, for accurate restore on unmute.
+    /// Default: 0.3 (same as ambient_volume default).
+    pre_mute_ambient_volume: f32,
+
     /// Master volume multiplier applied AFTER budget enforcement.
     /// Scales the combined output. Default: 1.0 (no scaling).
     master_volume: f32,
@@ -307,6 +311,7 @@ impl App {
             visualizer_state: VisualizerState::new(visualizer::NUM_BARS),
             visualizer_num_bars: visualizer::NUM_BARS,
             ambient_volume: 0.3,
+            pre_mute_ambient_volume: 0.3,
             master_volume: 1.0,
             ambient_download_rx: None,
             browser_state: BrowserState::Closed,
@@ -700,15 +705,22 @@ impl App {
             (KeyCode::Char('b'), _) => {
                 self.open_ambient_browser().await?;
             }
-            // Toggle ambient mute (AUDIO-04)
+            // Toggle ambient on/off (UI-07) -- m
             (KeyCode::Char('m'), _) => {
-                if self.ambient_volume > 0.0 {
-                    self.mute_ambient();
-                    tracing::info!(channel = "ambient", "Ambient muted");
-                } else {
-                    self.unmute_ambient();
-                    tracing::info!(channel = "ambient", "Ambient unmuted");
-                }
+                self.toggle_ambient();
+                tracing::info!(
+                    channel = "ambient",
+                    volume = self.ambient_volume,
+                    "Ambient toggled"
+                );
+            }
+            // Ambient volume up (UI-06) -- ]
+            (KeyCode::Char(']'), _) => {
+                self.ambient_volume_up();
+            }
+            // Ambient volume down (UI-06) -- [
+            (KeyCode::Char('['), _) => {
+                self.ambient_volume_down();
             }
             // Toggle visualizer (POL-01, POL-02) -- v
             (KeyCode::Char('v'), _) => {
@@ -1267,6 +1279,18 @@ impl App {
         }
     }
 
+    /// Increase ambient volume by 5%. Uses same step size as main volume for consistency.
+    fn ambient_volume_up(&mut self) {
+        self.ambient_volume = (self.ambient_volume + 0.05).min(1.0);
+        self.apply_ambient_volume();
+    }
+
+    /// Decrease ambient volume by 5%. Uses same step size as main volume for consistency.
+    fn ambient_volume_down(&mut self) {
+        self.ambient_volume = (self.ambient_volume - 0.05).max(0.0);
+        self.apply_ambient_volume();
+    }
+
     /// Apply ambient volume to the ambient sink only.
     ///
     /// Recreates the ambient sink at the target volume since rodio's
@@ -1278,17 +1302,20 @@ impl App {
         }
     }
 
-    /// Mute ambient channel by setting its volume to 0.
-    /// Per user decision: muting is simply volume=0, no separate state.
-    fn mute_ambient(&mut self) {
-        self.ambient_volume = 0.0;
-        self.apply_ambient_volume();
-    }
-
-    /// Unmute ambient channel by restoring default volume (0.3).
-    /// Since muting is just volume=0, unmuting restores a reasonable default.
-    fn unmute_ambient(&mut self) {
-        self.ambient_volume = 0.3;
+    /// Toggle ambient channel on/off.
+    ///
+    /// Muting saves the current volume in pre_mute_ambient_volume and sets
+    /// ambient to 0. Unmuting restores the saved volume instead of always
+    /// defaulting to 0.3, preserving the user's custom setting.
+    fn toggle_ambient(&mut self) {
+        if self.ambient_volume > 0.0 {
+            // Muting: save current volume, set to 0
+            self.pre_mute_ambient_volume = self.ambient_volume;
+            self.ambient_volume = 0.0;
+        } else {
+            // Unmuting: restore saved volume
+            self.ambient_volume = self.pre_mute_ambient_volume;
+        }
         self.apply_ambient_volume();
     }
 
