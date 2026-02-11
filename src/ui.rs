@@ -1,10 +1,10 @@
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, LineGauge, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, LineGauge, List, ListItem, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, AppView};
+use crate::app::{App, AppView, BrowserState};
 use crate::visualizer;
 
 /// Minimum terminal width below which we show a "too small" message.
@@ -93,6 +93,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         } else {
             render_status_bar(frame, app, bar_area, is_narrow);
         }
+    }
+
+    // Render browser overlay on top of everything when open
+    if !matches!(app.browser_state(), BrowserState::Closed) {
+        render_browser_overlay(frame, app);
     }
 }
 
@@ -443,12 +448,12 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect, is_narrow: bool) 
         )
     } else if is_narrow {
         (
-            " q:quit j/k:nav Enter:sel Space:pause".to_string(),
+            " q:quit j/k:nav Enter:sel Space:pause b:browse".to_string(),
             Style::default().fg(Color::White).bg(Color::DarkGray),
         )
     } else {
         (
-            " TermTunes | q:quit  j/k:nav  Enter:select  Space:pause  n/N:next/prev  +/-:vol  s:shuffle  r:repeat  h/l:seek  v:viz  f:fav  1-9:play fav"
+            " TermTunes | q:quit  j/k:nav  Enter:select  Space:pause  n/N:next/prev  +/-:vol  s:shuffle  r:repeat  h/l:seek  v:viz  f:fav  1-9:play fav  b:browse  m:mute"
                 .to_string(),
             Style::default().fg(Color::White).bg(Color::DarkGray),
         )
@@ -476,5 +481,85 @@ fn truncate_for_display(s: &str, max_chars: usize) -> String {
         let mut truncated: String = s.chars().take(max_chars - 3).collect();
         truncated.push_str("...");
         truncated
+    }
+}
+
+/// Calculate a centered popup area as a percentage of the full terminal.
+///
+/// Uses ratatui's Layout + Flex::Center pattern (official popup example)
+/// to compute a centered Rect that automatically handles terminal resize.
+fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
+    let vertical = Layout::vertical([Constraint::Percentage(percent_y)])
+        .flex(Flex::Center);
+    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)])
+        .flex(Flex::Center);
+    let [area] = vertical.areas(area);
+    let [area] = horizontal.areas(area);
+    area
+}
+
+/// Render the ambient track browser as a centered popup overlay.
+///
+/// Uses the Clear widget to erase the background region, then renders
+/// a bordered List widget with the current browser level content
+/// (sections or tracks). Highlight style matches the existing playlist
+/// list (Magenta background to distinguish from main Cyan selection).
+fn render_browser_overlay(frame: &mut Frame, app: &mut App) {
+    let popup = popup_area(frame.area(), 70, 80);
+
+    // Clear the popup area to prevent bleed-through from underlying content
+    frame.render_widget(Clear, popup);
+
+    match app.browser_state_mut() {
+        BrowserState::Sections { sections, list_state } => {
+            let items: Vec<ListItem> = sections
+                .iter()
+                .map(|s| ListItem::new(s.title.clone()))
+                .collect();
+
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .title(" Music Libraries ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Magenta)),
+                )
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("> ");
+
+            frame.render_stateful_widget(list, popup, list_state);
+        }
+        BrowserState::Tracks { section_title, tracks, list_state } => {
+            let items: Vec<ListItem> = tracks
+                .iter()
+                .map(|t| {
+                    let artist = t.artist.as_deref().unwrap_or("Unknown");
+                    ListItem::new(format!("{} - {}", t.title, artist))
+                })
+                .collect();
+
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .title(format!(" {} - Select Ambient Track ", section_title))
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Magenta)),
+                )
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("> ");
+
+            frame.render_stateful_widget(list, popup, list_state);
+        }
+        BrowserState::Closed => {} // Should not reach here -- caller checks
     }
 }
