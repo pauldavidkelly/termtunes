@@ -29,7 +29,7 @@
 - Decimal phases (7.1, 7.2): Urgent insertions if needed (marked INSERTED)
 
 - [ ] **Phase 6: Dual-Sink Audio Engine** — Second audio channel with independent volume and loop control
-- [ ] **Phase 7: Track Browsing & Ambient Playback** — Browse Plex library, select track, play on ambient channel
+- [x] **Phase 7: Track Browsing & Ambient Playback** — Browse Plex library, select track, play on ambient channel
 - [ ] **Phase 8: Ambient Status UI & Controls** — Status panel, volume display, and dedicated keybindings
 - [ ] **Phase 9: Session Persistence** — Save and restore ambient state across app restarts
 
@@ -64,8 +64,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 07-01-PLAN.md -- Plex library API endpoints, BrowserState enum, browser input routing and key handler
-- [ ] 07-02-PLAN.md -- Browser popup overlay rendering in ui.rs and end-to-end verification
+- [x] 07-01-PLAN.md -- Plex library API endpoints, BrowserState enum, browser input routing and key handler
+- [x] 07-02-PLAN.md -- Browser popup overlay rendering in ui.rs and end-to-end verification
 
 ### Phase 8: Ambient Status UI & Controls
 **Goal**: User has full visibility into ambient state and can control it efficiently with dedicated keybindings
@@ -106,11 +106,11 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9
 | 4. Tmux Integration and Polish | v1.0 | 2/2 | Complete | 2026-02-10 |
 | 5. Audio Visualizer | v1.0 | 1/1 | Complete | 2026-02-10 |
 | 6. Dual-Sink Audio Engine | v1.1 | 0/2 | Not started | - |
-| 7. Track Browsing & Ambient Playback | v1.1 | 0/2 | Not started | - |
+| 7. Track Browsing & Ambient Playback | v1.1 | 2/2 | Complete | 2026-02-11 |
 | 8. Ambient Status UI & Controls | v1.1 | 0/1 | Not started | - |
 | 9. Session Persistence | v1.1 | 0/1 | Not started | - |
 
 ---
 
 *Roadmap created: 2026-02-10*
-*Last updated: 2026-02-11 after Phase 7 planning*
+*Last updated: 2026-02-11 after Phase 7 execution*
