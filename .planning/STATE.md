@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-02-10)
 
 **Core value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
-**Current focus:** Phase 7 complete -- ready for Phase 8
+**Current focus:** Phase 8 complete -- ready for Phase 9
 
 ## Current Position
 
-Phase: 7 of 9 (Ambient Track Selection) -- COMPLETE
-Plan: 2 of 2 in current phase (all plans complete)
+Phase: 8 of 9 (Ambient Status UI Controls) -- COMPLETE
+Plan: 1 of 1 in current phase (all plans complete)
 Status: Phase complete
-Last activity: 2026-02-11 -- Completed 07-02-PLAN.md (browser overlay rendering + ambient volume balance)
+Last activity: 2026-02-11 -- Completed 08-01-PLAN.md (ambient status panel and controls)
 
-Progress: [##############..........] 14/17 plans (v1.0: 10/10, v1.1: 4/7)
+Progress: [###############.........] 15/17 plans (v1.0: 10/10, v1.1: 5/7)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 14
-- Average duration: ~8 min
-- Total execution time: ~1.98 hours
+- Total plans completed: 15
+- Average duration: ~8.5 min
+- Total execution time: ~2.6 hours
 
 **By Phase:**
 
@@ -34,9 +34,10 @@ Progress: [##############..........] 14/17 plans (v1.0: 10/10, v1.1: 4/7)
 | 05-audio-visualizer | 1/1 | ~5 min | ~5 min |
 | 06-dual-sink-audio-engine | 2/2 | ~extended | ~variable |
 | 07-track-browsing-ambient-playback | 2/2 | ~11 min | ~5.5 min |
+| 08-ambient-status-ui-controls | 1/1 | ~37 min | ~37 min |
 
 **Recent Trend:**
-- Last 5 plans: 06-01 (~5 min), 06-02 (extended - 8 fix iterations), 07-01 (~3 min), 07-02 (~8 min, 2 fix iterations)
+- Last 5 plans: 06-02 (extended - 8 fix iterations), 07-01 (~3 min), 07-02 (~8 min, 2 fix iterations), 08-01 (~37 min, 1 fix iteration + user verify pause)
 
 *Updated after each plan completion*
 
@@ -53,7 +54,7 @@ Key v1.1 decisions:
 - rodio `repeat_infinite()` has confirmed memory leak -- use manual re-append loop
 - Single OutputStream shared by both sinks (never create second OutputStream)
 - **REVISED:** Volume budget REPLACED with independent channels -- proportional budget caused UX issues (volume capped at 59%, ambient audible at 0% main, +/- barely affected ambient)
-- **NEW:** rodio Sink::set_volume() unreliable for ambient sinks -- must recreate entire sink on volume change (stop old, create new at target volume, re-decode cached bytes)
+- **REVISED:** rodio Sink::set_volume() works correctly for ambient sinks -- earlier sink recreation approach caused track restart on every volume change; direct set_volume() preserves playback position (Phase 8 fix)
 - **NEW:** Background thread + mpsc channel required for ambient downloads (reqwest::blocking nests tokio runtime)
 - **NEW:** UI must show saved_volume (user intent), not player.volume() (sink value)
 - **NEW:** Logging defaults to info level when RUST_LOG not set (EnvFilter fallback)
@@ -65,6 +66,10 @@ Key v1.1 decisions:
 - **NEW:** popup_area() + Clear widget pattern for centered popup overlays
 - **NEW:** includeMedia=1 required for Plex library section tracks endpoint (media not included by default)
 - **NEW:** Ambient volume 0.3 validated by user as correct background level (0.7 overpowered main)
+- **NEW:** Pre-mute volume memory (pre_mute_ambient_volume) for accurate m toggle restore
+- **NEW:** Unified toggle_ambient() replaces separate mute/unmute methods
+- **NEW:** Ambient status panel gated on ambient_track_name().is_some() (not shown until track loaded)
+- **NEW:** 4-branch conditional layout for viz+ambient, viz-only, ambient-only, neither combinations
 
 ### Pending Todos
 
@@ -77,5 +82,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 07-02-PLAN.md (browser overlay rendering + ambient volume balance)
-Next: Phase 8 plans (ambient controls, volume UI, status display)
+Stopped at: Completed 08-01-PLAN.md (ambient status panel and controls)
+Next: Phase 9 plans (session persistence)
