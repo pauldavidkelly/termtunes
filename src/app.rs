@@ -1583,7 +1583,11 @@ impl App {
             let part_key = match part_key {
                 Some(key) => key,
                 None => {
-                    tracing::warn!(track = %track.title, "Browser track has no media parts");
+                    tracing::warn!(
+                        track = %track.title,
+                        media_count = track.media.len(),
+                        "Browser track has no media parts -- cannot construct stream URL"
+                    );
                     return Ok(());
                 }
             };

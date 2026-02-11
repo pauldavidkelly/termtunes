@@ -246,8 +246,11 @@ impl PlexClient {
 
     /// Fetch all tracks in a music library section.
     ///
-    /// GET {server_url}/library/sections/{section_key}/all?type=10
+    /// GET {server_url}/library/sections/{section_key}/all?type=10&includeMedia=1
     /// type=10 is the Plex content type for audio tracks.
+    /// includeMedia=1 ensures the Media array (with Part keys for stream URLs)
+    /// is included in the response -- without this, the library section endpoint
+    /// may return tracks with empty Media arrays.
     pub async fn fetch_section_tracks(&self, section_key: &str) -> Result<Vec<Track>> {
         let headers = self.server_headers();
         let resp = self
@@ -257,7 +260,7 @@ impl PlexClient {
                 self.server_url, section_key
             ))
             .headers(headers)
-            .query(&[("type", "10")])
+            .query(&[("type", "10"), ("includeMedia", "1")])
             .send()
             .await?
             .error_for_status()?
