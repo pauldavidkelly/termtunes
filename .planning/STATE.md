@@ -5,22 +5,22 @@
 See: .planning/PROJECT.md (updated 2026-02-10)
 
 **Core value:** Keep music playback inside the terminal workflow - no context switching to external apps, everything stays in Tmux.
-**Current focus:** Phase 8 complete -- ready for Phase 9
+**Current focus:** Phase 9 complete -- v1.1 multi-channel audio milestone COMPLETE
 
 ## Current Position
 
-Phase: 8 of 9 (Ambient Status UI Controls) -- COMPLETE
+Phase: 9 of 9 (Session Persistence) -- COMPLETE
 Plan: 1 of 1 in current phase (all plans complete)
-Status: Phase complete
-Last activity: 2026-02-11 -- Completed 08-01-PLAN.md (ambient status panel and controls)
+Status: Phase complete -- v1.1 milestone COMPLETE
+Last activity: 2026-02-11 -- Completed 09-01-PLAN.md (ambient session persistence)
 
-Progress: [###############.........] 15/17 plans (v1.0: 10/10, v1.1: 5/7)
+Progress: [########################] 17/17 plans (v1.0: 10/10, v1.1: 7/7)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 15
-- Average duration: ~8.5 min
+- Total plans completed: 17
+- Average duration: ~8 min
 - Total execution time: ~2.6 hours
 
 **By Phase:**
@@ -35,9 +35,10 @@ Progress: [###############.........] 15/17 plans (v1.0: 10/10, v1.1: 5/7)
 | 06-dual-sink-audio-engine | 2/2 | ~extended | ~variable |
 | 07-track-browsing-ambient-playback | 2/2 | ~11 min | ~5.5 min |
 | 08-ambient-status-ui-controls | 1/1 | ~37 min | ~37 min |
+| 09-session-persistence | 1/1 | ~2 min | ~2 min |
 
 **Recent Trend:**
-- Last 5 plans: 06-02 (extended - 8 fix iterations), 07-01 (~3 min), 07-02 (~8 min, 2 fix iterations), 08-01 (~37 min, 1 fix iteration + user verify pause)
+- Last 5 plans: 07-01 (~3 min), 07-02 (~8 min, 2 fix iterations), 08-01 (~37 min, 1 fix iteration + user verify pause), 09-01 (~2 min, 0 fix iterations)
 
 *Updated after each plan completion*
 
@@ -70,6 +71,11 @@ Key v1.1 decisions:
 - **NEW:** Unified toggle_ambient() replaces separate mute/unmute methods
 - **NEW:** Ambient status panel gated on ambient_track_name().is_some() (not shown until track loaded)
 - **NEW:** 4-branch conditional layout for viz+ambient, viz-only, ambient-only, neither combinations
+- **NEW:** Ambient part_key stored at selection time for session persistence (not full URL -- tokens rotate)
+- **NEW:** Pre-mute ambient volume preserved in session save (save intended volume, not muted 0.0)
+- **NEW:** Player init guard in check_ambient_download_complete() for ambient-before-main edge case
+- **NEW:** First-use ambient default: (main_volume - 0.30).max(0.0) via Option<f32> None distinction
+- **NEW:** #[serde(default)] per-field for backward-compatible Session struct extension
 
 ### Pending Todos
 
@@ -82,5 +88,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-11
-Stopped at: Completed 08-01-PLAN.md (ambient status panel and controls)
-Next: Phase 9 plans (session persistence)
+Stopped at: Completed 09-01-PLAN.md (ambient session persistence) -- v1.1 milestone COMPLETE
+Next: All v1.0 and v1.1 plans complete (17/17). Project roadmap fulfilled.
