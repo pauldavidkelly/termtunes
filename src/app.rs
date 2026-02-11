@@ -1257,6 +1257,12 @@ impl App {
         if let Some(player) = &self.player {
             player.set_main_volume(main_final);
             player.set_ambient_volume(ambient_final);
+
+            // Verify the volume was actually applied by reading it back
+            tracing::info!(
+                main_sink_volume = player.volume(),
+                "Volume verification after budget"
+            );
         }
     }
 
