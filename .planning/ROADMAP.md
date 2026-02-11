@@ -61,12 +61,11 @@ Plans:
   3. Selected track downloads and automatically starts playing on the ambient channel without interrupting main music
   4. User can change the ambient track by reopening the browser and selecting a different track while music continues
   5. Browser overlay closes cleanly after selection or cancel, returning to normal view
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 07-01: TBD
-- [ ] 07-02: TBD
-- [ ] 07-03: TBD
+- [ ] 07-01-PLAN.md -- Plex library API endpoints, BrowserState enum, browser input routing and key handler
+- [ ] 07-02-PLAN.md -- Browser popup overlay rendering in ui.rs and end-to-end verification
 
 ### Phase 8: Ambient Status UI & Controls
 **Goal**: User has full visibility into ambient state and can control it efficiently with dedicated keybindings
@@ -107,11 +106,11 @@ Phases execute in numeric order: 6 -> 7 -> 8 -> 9
 | 4. Tmux Integration and Polish | v1.0 | 2/2 | Complete | 2026-02-10 |
 | 5. Audio Visualizer | v1.0 | 1/1 | Complete | 2026-02-10 |
 | 6. Dual-Sink Audio Engine | v1.1 | 0/2 | Not started | - |
-| 7. Track Browsing & Ambient Playback | v1.1 | 0/3 | Not started | - |
+| 7. Track Browsing & Ambient Playback | v1.1 | 0/2 | Not started | - |
 | 8. Ambient Status UI & Controls | v1.1 | 0/1 | Not started | - |
 | 9. Session Persistence | v1.1 | 0/1 | Not started | - |
 
 ---
 
 *Roadmap created: 2026-02-10*
-*Last updated: 2026-02-10 after v1.1 roadmap creation*
+*Last updated: 2026-02-11 after Phase 7 planning*
