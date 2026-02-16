@@ -13,14 +13,14 @@ See: .planning/PROJECT.md (updated 2026-02-11)
 **Phases completed:** 9 phases (v1.0: 1-5, v1.1: 6-9)
 **Plans completed:** 16 total (v1.0: 10, v1.1: 6)
 **Status:** Both milestones complete + quick tasks in progress
-**Last activity:** 2026-02-11 -- Completed quick task 1 (hierarchical ambient browser)
+**Last activity:** 2026-02-16 -- Completed quick task 2 (README with installation guide)
 
 Progress: v1.0 ✅ 10/10 plans | v1.1 ✅ 6/6 plans
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 17
+- Total plans completed: 18
 - Average duration: ~8 min
 - Total execution time: ~2.6 hours
 
@@ -95,9 +95,10 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 1 | Add hierarchical ambient track browser with playlists/artists navigation and search | 2026-02-11 | ee9bfaa | [1-add-hierarchical-ambient-track-browser-w](./quick/1-add-hierarchical-ambient-track-browser-w/) |
+| 2 | Add README with installation guide and feature documentation | 2026-02-16 | eec8e38 | [2-add-readme-with-installation-guide-cover](./quick/2-add-readme-with-installation-guide-cover/) |
 
 ## Session Continuity
 
-Last session: 2026-02-11
-Stopped at: Completed quick task 1 (hierarchical ambient browser)
-Next: Quick task complete. Hierarchical browser functional with search + Play All.
+Last session: 2026-02-16
+Stopped at: Completed quick task 2 (README with installation guide)
+Next: Quick task complete. README.md ready at project root.
