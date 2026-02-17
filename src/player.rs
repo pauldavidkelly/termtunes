@@ -57,42 +57,55 @@ impl Player {
             ensure_alsa_pulse_config()?;
         }
 
-        let stream = OutputStreamBuilder::open_default_stream().map_err(|e| {
-            let msg = format!("Failed to open audio output: {}", e);
-            if is_wsl2() {
-                // Provide WSL2-specific diagnostics
-                let has_plugin = alsa_pulse_plugin_exists();
-                let has_socket = std::path::Path::new("/mnt/wslg/PulseServer").exists();
-                let pulse_server = std::env::var("PULSE_SERVER").unwrap_or_default();
+        let stream = OutputStreamBuilder::from_default_device()
+            .and_then(|builder| {
+                builder
+                    .with_buffer_size(rodio::cpal::BufferSize::Fixed(4096))
+                    .with_error_callback(|err| {
+                        tracing::warn!("Audio stream error (possible underrun): {err}");
+                    })
+                    .open_stream()
+            })
+            .or_else(|_| {
+                tracing::info!("Explicit buffer config failed, falling back to default stream");
+                OutputStreamBuilder::open_default_stream()
+            })
+            .map_err(|e| {
+                let msg = format!("Failed to open audio output: {}", e);
+                if is_wsl2() {
+                    // Provide WSL2-specific diagnostics
+                    let has_plugin = alsa_pulse_plugin_exists();
+                    let has_socket = std::path::Path::new("/mnt/wslg/PulseServer").exists();
+                    let pulse_server = std::env::var("PULSE_SERVER").unwrap_or_default();
 
-                tracing::error!(
-                    has_alsa_pulse_plugin = has_plugin,
-                    has_wslg_socket = has_socket,
-                    pulse_server = %pulse_server,
-                    "WSL2 audio device initialization failed"
-                );
+                    tracing::error!(
+                        has_alsa_pulse_plugin = has_plugin,
+                        has_wslg_socket = has_socket,
+                        pulse_server = %pulse_server,
+                        "WSL2 audio device initialization failed"
+                    );
 
-                if !has_plugin {
-                    color_eyre::eyre::eyre!(
-                        "{}\n\nWSL2 audio requires the ALSA PulseAudio plugin.\n\
-                         Install it with: sudo apt-get install -y libasound2-plugins\n\
-                         Then restart the application.",
-                        msg
-                    )
-                } else if !has_socket {
-                    color_eyre::eyre::eyre!(
-                        "{}\n\nWSLg PulseAudio socket not found at /mnt/wslg/PulseServer.\n\
-                         WSLg may not be running. Try restarting WSL with: wsl --shutdown\n\
-                         Then reopen your terminal and try again.",
-                        msg
-                    )
+                    if !has_plugin {
+                        color_eyre::eyre::eyre!(
+                            "{}\n\nWSL2 audio requires the ALSA PulseAudio plugin.\n\
+                             Install it with: sudo apt-get install -y libasound2-plugins\n\
+                             Then restart the application.",
+                            msg
+                        )
+                    } else if !has_socket {
+                        color_eyre::eyre::eyre!(
+                            "{}\n\nWSLg PulseAudio socket not found at /mnt/wslg/PulseServer.\n\
+                             WSLg may not be running. Try restarting WSL with: wsl --shutdown\n\
+                             Then reopen your terminal and try again.",
+                            msg
+                        )
+                    } else {
+                        color_eyre::eyre::eyre!("{}", msg)
+                    }
                 } else {
                     color_eyre::eyre::eyre!("{}", msg)
                 }
-            } else {
-                color_eyre::eyre::eyre!("{}", msg)
-            }
-        })?;
+            })?;
 
         let main_sink = Sink::connect_new(stream.mixer());
 
@@ -557,15 +570,11 @@ fn ensure_alsa_pulse_config() -> Result<()> {
         );
     }
 
-    // ALSA configuration that routes audio through PulseAudio with buffer
-    // sizes tuned for WSL2's WSLg PulseAudio bridge. Without explicit
-    // buffer tuning, the default ALSA period/buffer sizes are too small
-    // for the WSL2 PulseAudio shim, causing audible crackling and
-    // clicking artifacts (buffer underruns).
-    //
-    // buffer_size 8192 (4 periods of 2048 frames) at 44100 Hz gives
-    // ~186ms of buffer which is large enough to absorb WSL2 scheduling
-    // jitter without perceptible latency for music playback.
+    // ALSA configuration that routes audio through PulseAudio for WSL2's
+    // WSLg audio bridge. The `type pulse` PCM plugin does not accept
+    // buffer_size/period_size parameters directly -- PulseAudio buffer
+    // tuning is handled via PULSE_LATENCY_MSEC (set in main.rs) and
+    // the cpal buffer size (set in Player::new via OutputStreamBuilder).
     let config = format!(
         "\
 {ASOUNDRC_MARKER} for WSL2 audio support.
