@@ -48,11 +48,12 @@ async fn main() -> Result<()> {
     //    Must be set BEFORE creating any OutputStream/audio device.
     //    The WSLg PulseAudio bridge introduces scheduling jitter that
     //    causes buffer underruns (crackling/clicking) at low latencies.
-    //    150ms provides enough buffer to absorb this jitter while staying
+    //    300ms provides enough buffer to absorb this jitter while staying
     //    imperceptible for music playback. Lower values (e.g. 60ms) cause
-    //    audible artifacts on WSL2.
+    //    audible artifacts on WSL2. 150ms was found insufficient for
+    //    sustained playback -- stuttering appeared after ~20 seconds.
     //    Safety: called at startup before any threads are spawned.
-    unsafe { std::env::set_var("PULSE_LATENCY_MSEC", "150") };
+    unsafe { std::env::set_var("PULSE_LATENCY_MSEC", "300") };
 
     // 3b. Check WSL2 audio dependencies early and warn the user while we
     //     are still on the normal terminal (not alternate screen).
