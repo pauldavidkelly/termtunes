@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use color_eyre::Result;
@@ -13,7 +13,7 @@ use crate::config::{self, Config, ServerConfig};
 use crate::player::Player;
 use crate::plex::{self, Playlist, PlexClient, PlexServer, Track};
 use crate::ui;
-use crate::visualizer::{self, VisualizerData, VisualizerState};
+use crate::visualizer::{self, VisualizerState};
 use rand::seq::SliceRandom;
 
 // ---------------------------------------------------------------------------
@@ -259,11 +259,6 @@ pub struct App {
     /// Whether the visualizer display is enabled (toggled with 'v').
     visualizer_enabled: bool,
 
-    /// Shared data between the audio thread (writes samples) and UI thread
-    /// (reads for FFT). Created once at app startup, passed to each new
-    /// VisualizerSource when a track starts playing.
-    visualizer_data: Arc<Mutex<VisualizerData>>,
-
     /// Temporal smoothing state for visualizer bars (fast attack, slow decay).
     visualizer_state: VisualizerState,
 
@@ -345,7 +340,6 @@ impl App {
             repeat_mode: RepeatMode::Off,
             awaiting_favorite_key: false,
             visualizer_enabled: false,
-            visualizer_data: visualizer::create_visualizer_data(visualizer::FFT_SIZE),
             visualizer_state: VisualizerState::new(visualizer::NUM_BARS),
             visualizer_num_bars: visualizer::NUM_BARS,
             ambient_volume: 0.3,
@@ -459,12 +453,22 @@ impl App {
             return;
         }
 
-        if let Some(bars) = visualizer::compute_spectrum_bars(
-            &self.visualizer_data,
-            self.visualizer_num_bars,
-        ) {
-            self.visualizer_state.update(&bars);
-        }
+        // Read visualization samples directly from the pre-decoded PCM buffer
+        // at the current playback position. No shared state with the audio thread.
+        let bars = self
+            .player
+            .as_ref()
+            .and_then(|p| p.get_visualizer_samples(visualizer::FFT_SIZE))
+            .and_then(|(samples, sample_rate)| {
+                visualizer::compute_spectrum_bars_from_pcm(
+                    &samples,
+                    sample_rate,
+                    self.visualizer_num_bars,
+                )
+            })
+            .unwrap_or_else(|| vec![0.0; self.visualizer_num_bars]);
+
+        self.visualizer_state.update(&bars);
     }
 
     /// Set the dynamic number of visualizer bars (called by UI based on width).
@@ -600,7 +604,7 @@ impl App {
 
                     // Start playback with the saved volume level
                     if let Some(player) = &mut self.player {
-                        match player.load_and_play(audio_bytes, track_name.clone(), self.saved_volume, Some(Arc::clone(&self.visualizer_data))) {
+                        match player.load_and_play(audio_bytes, track_name.clone(), self.saved_volume) {
                             Ok(()) => {
                                 self.view = AppView::Playing;
                                 self.error_message = None;
@@ -1123,7 +1127,7 @@ impl App {
             RepeatMode::One => {
                 // Replay current track from cached bytes (no re-download)
                 if let Some(player) = &mut self.player {
-                    if let Err(e) = player.replay_current(self.saved_volume, Some(Arc::clone(&self.visualizer_data))) {
+                    if let Err(e) = player.replay_current(self.saved_volume) {
                         tracing::warn!("Repeat One replay failed: {}, falling back to download", e);
                         // Fallback: re-download if cached replay fails
                         if let Some(idx) = self.current_track_index {

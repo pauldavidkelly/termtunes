@@ -1,13 +1,10 @@
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use color_eyre::Result;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
-
-use crate::visualizer::{VisualizerData, VisualizerSource, FFT_SIZE};
 
 /// Seek step size for forward/backward seeking within a track.
 const SEEK_STEP: Duration = Duration::from_secs(5);
@@ -32,11 +29,9 @@ pub struct Player {
     _audio_data: Option<Vec<u8>>,
 
     /// Pre-decoded PCM samples for the current main track: (samples, channels, sample_rate).
-    /// Used for seek (recreate SamplesBuffer from offset) and replay (no re-decode needed).
+    /// Used for seek (recreate SamplesBuffer from offset), replay (no re-decode needed),
+    /// and visualizer (UI thread reads samples at playback position — no audio thread overhead).
     decoded_pcm: Option<(Vec<f32>, u16, u32)>,
-
-    /// Shared visualizer data, stored so seek/replay methods can re-wrap with VisualizerSource.
-    visualizer_data: Option<Arc<Mutex<VisualizerData>>>,
 
     /// Name of the currently playing track (for status bar display).
     current_track: Option<String>,
@@ -131,7 +126,6 @@ impl Player {
             main_sink,
             _audio_data: None,
             decoded_pcm: None,
-            visualizer_data: None,
             current_track: None,
             ambient_sink: None,
             ambient_audio_data: None,
@@ -209,7 +203,6 @@ impl Player {
         audio_bytes: Vec<u8>,
         track_name: String,
         volume: f32,
-        visualizer_data: Option<Arc<Mutex<VisualizerData>>>,
     ) -> Result<()> {
         // Stop current playback
         self.main_sink.stop();
@@ -224,25 +217,15 @@ impl Player {
 
         // Pre-decode to raw PCM samples. This runs the symphonia decoder NOW
         // (on the calling thread), so the audio callback thread only does fast
-        // memory reads from the Vec<f32>.
+        // memory reads from the Vec<f32>. No VisualizerSource wrapper — the UI
+        // thread reads visualization samples directly from decoded_pcm using
+        // the playback position, keeping the audio thread completely clean.
         let (samples, channels, sample_rate) = Self::decode_to_pcm(&audio_bytes)?;
         self.decoded_pcm = Some((samples.clone(), channels, sample_rate));
 
-        // Store visualizer data for seek/replay re-wrapping
-        self.visualizer_data = visualizer_data.clone();
-
-        // Create SamplesBuffer from pre-decoded PCM
+        // Feed pre-decoded PCM directly to the Sink — zero overhead on audio thread
         let source = SamplesBuffer::new(channels, sample_rate, samples);
-
-        // Wrap with visualizer tap if data is provided. The VisualizerSource
-        // copies samples to the shared buffer as they flow through, enabling
-        // real-time FFT visualization without affecting audio quality.
-        if let Some(data) = visualizer_data {
-            let viz_source = VisualizerSource::new(source, data, FFT_SIZE);
-            self.main_sink.append(viz_source);
-        } else {
-            self.main_sink.append(source);
-        }
+        self.main_sink.append(source);
 
         // Store compressed bytes for re-download avoidance and status display
         self._audio_data = Some(audio_bytes);
@@ -377,16 +360,9 @@ impl Player {
         self.main_sink = Sink::connect_new(self._stream.mixer());
         self.main_sink.set_volume(volume);
 
-        // Create SamplesBuffer from the offset position
+        // Create SamplesBuffer from the offset position — fed directly to Sink
         let source = SamplesBuffer::new(channels, sample_rate, remaining_samples);
-
-        // Wrap with VisualizerSource if visualizer data is stored
-        if let Some(ref data) = self.visualizer_data {
-            let viz_source = VisualizerSource::new(source, Arc::clone(data), FFT_SIZE);
-            self.main_sink.append(viz_source);
-        } else {
-            self.main_sink.append(source);
-        }
+        self.main_sink.append(source);
 
         tracing::info!(
             target_secs = format!("{:.1}", target.as_secs_f64()),
@@ -403,7 +379,6 @@ impl Player {
     pub fn replay_current(
         &mut self,
         volume: f32,
-        visualizer_data: Option<Arc<Mutex<VisualizerData>>>,
     ) -> Result<()> {
         let (samples, channels, sample_rate) = self
             .decoded_pcm
@@ -415,16 +390,9 @@ impl Player {
         self.main_sink = Sink::connect_new(self._stream.mixer());
         self.main_sink.set_volume(volume.clamp(0.0, 1.0));
 
-        // Create SamplesBuffer from cached pre-decoded PCM (no re-decode needed)
+        // Feed pre-decoded PCM directly to the Sink
         let source = SamplesBuffer::new(channels, sample_rate, samples);
-
-        // Wrap with visualizer tap if data is provided
-        if let Some(data) = visualizer_data {
-            let viz_source = VisualizerSource::new(source, data, FFT_SIZE);
-            self.main_sink.append(viz_source);
-        } else {
-            self.main_sink.append(source);
-        }
+        self.main_sink.append(source);
 
         tracing::info!("Replaying track from cached PCM (Repeat One)");
         Ok(())
@@ -582,6 +550,44 @@ impl Player {
     pub fn set_main_volume(&self, vol: f32) {
         self.main_sink.set_volume(vol.clamp(0.0, 1.0));
     }
+
+    /// Read visualization samples from the pre-decoded PCM at the current
+    /// playback position. Called by the UI thread — no audio thread overhead.
+    ///
+    /// Returns `fft_size` mono samples (left channel extracted from interleaved
+    /// PCM) and the sample rate if a track is currently loaded. Returns None
+    /// if no track is loaded or playback is paused.
+    pub fn get_visualizer_samples(&self, fft_size: usize) -> Option<(Vec<f32>, u32)> {
+        if self.main_sink.is_paused() || self.main_sink.empty() {
+            return None;
+        }
+
+        let (samples, channels, sample_rate) = self.decoded_pcm.as_ref()?;
+        let ch = *channels as usize;
+        let sr = *sample_rate;
+
+        // Calculate the sample offset from playback position
+        let pos = self.main_sink.get_pos();
+        let frame_offset = (pos.as_secs_f64() * sr as f64) as usize;
+        let sample_offset = frame_offset * ch;
+
+        if sample_offset >= samples.len() {
+            return None;
+        }
+
+        // Extract mono (left channel) samples for FFT
+        let mut mono = Vec::with_capacity(fft_size);
+        let mut i = sample_offset;
+        while mono.len() < fft_size && i < samples.len() {
+            mono.push(samples[i]);
+            i += ch; // skip to next frame (left channel only)
+        }
+
+        // Pad with zeros if we don't have enough samples
+        mono.resize(fft_size, 0.0);
+
+        Some((mono, sr))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -618,7 +624,7 @@ const ASOUNDRC_MARKER: &str = "# Auto-generated by TermTunes";
 
 /// Version tag embedded in .asoundrc so we can detect stale configs and
 /// upgrade them automatically. Bump this when the ALSA config changes.
-const ASOUNDRC_VERSION: &str = "# termtunes-asoundrc-v2";
+const ASOUNDRC_VERSION: &str = "# termtunes-asoundrc-v3";
 
 /// Ensure ALSA is configured to route through PulseAudio on WSL2 with
 /// buffer sizes tuned to avoid crackling/clicking artifacts.
@@ -679,7 +685,6 @@ fn ensure_alsa_pulse_config() -> Result<()> {
 # The WSLg PulseAudio bridge needs larger buffers than a native setup.
 pcm.!default {{
     type pulse
-    fallback \"sysdefault\"
     hint {{
         show on
         description \"Default ALSA Output (PulseAudio via WSLg)\"
@@ -688,7 +693,6 @@ pcm.!default {{
 
 ctl.!default {{
     type pulse
-    fallback \"sysdefault\"
 }}
 "
     );
