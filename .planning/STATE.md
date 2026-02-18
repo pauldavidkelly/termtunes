@@ -13,7 +13,7 @@ See: .planning/PROJECT.md (updated 2026-02-11)
 **Phases completed:** 9 phases (v1.0: 1-5, v1.1: 6-9)
 **Plans completed:** 16 total (v1.0: 10, v1.1: 6)
 **Status:** Both milestones complete + quick tasks in progress
-**Last activity:** 2026-02-18 -- Completed quick task 4 (fix audio playback stopping unexpectedly)
+**Last activity:** 2026-02-18 -- Completed quick task 5 (fix crackling audio outside Tmux — WSL2-conditional buffer settings)
 
 Progress: v1.0 ✅ 10/10 plans | v1.1 ✅ 6/6 plans
 
@@ -82,7 +82,8 @@ Key v1.1 decisions:
 - **NEW:** ambient_playlist/ambient_playlist_index fields for Play All sequential ambient cycling
 - **NEW:** Back from ArtistTracks goes to Artists (not Albums) to avoid caching album state
 - **NEW:** Pre-decode audio to Vec<f32> via decode_to_pcm() before feeding to SamplesBuffer -- eliminates symphonia from audio callback thread
-- **NEW:** PULSE_LATENCY_MSEC bumped from 300 to 500 for sustained playback beyond 1 minute on WSL2
+- **NEW:** PULSE_LATENCY_MSEC bumped from 300 to 500 for sustained playback beyond 1 minute on WSL2 (WSL2-only; not set on native Linux/macOS to avoid crackling)
+- **NEW:** BufferSize::Fixed(4096) is WSL2-only — non-WSL2 uses OS-default buffer size
 - **NEW:** Seek implemented by recreating SamplesBuffer from sample offset (VisualizerSource does not implement try_seek)
 
 ### Pending Todos
@@ -101,9 +102,10 @@ None yet.
 | 2 | Add README with installation guide and feature documentation | 2026-02-16 | eec8e38 | [2-add-readme-with-installation-guide-cover](./quick/2-add-readme-with-installation-guide-cover/) |
 | 3 | Fix audio playback stuttering on WSL2 (buffer tuning + PULSE_LATENCY_MSEC) | 2026-02-17 | e0dd365 | [3-fix-audio-playback-stuttering-that-occur](./quick/3-fix-audio-playback-stuttering-that-occur/) |
 | 4 | Fix audio playback stopping unexpectedly (pre-decode PCM + SamplesBuffer) | 2026-02-18 | 1a913e5 | [4-fix-audio-playback-stopping-unexpectedly](./quick/4-fix-audio-playback-stopping-unexpectedly/) |
+| 5 | Fix crackling audio introduced by recent WSL2 Tmux fixes restore clean playback outside Tmux as baseline | 2026-02-18 | 4f65e99 | [5-fix-crackling-audio-introduced-by-recent](./quick/5-fix-crackling-audio-introduced-by-recent/) |
 
 ## Session Continuity
 
 Last session: 2026-02-18
-Stopped at: Completed quick task 4 (fix audio playback stopping unexpectedly)
-Next: Quick task complete. Pre-decode PCM applied to src/player.rs, PULSE_LATENCY_MSEC bumped to 500 in src/main.rs.
+Stopped at: Completed quick task 5 (fix crackling audio outside Tmux)
+Next: Verify clean playback outside Tmux/WSL2. Then investigate Tmux-specific streaming issue (stuttering after 20-40s) as a separate quick task.
