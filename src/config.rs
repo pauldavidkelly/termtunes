@@ -1,6 +1,8 @@
 use std::collections::HashMap;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use color_eyre::Result;
 use serde::{Deserialize, Serialize};
@@ -143,10 +145,14 @@ pub fn save_config(config: &Config) -> Result<()> {
 
     // Set permissions to 0o600 (owner read/write only) for security.
     // Config file may contain Plex auth tokens.
-    let metadata = std::fs::metadata(&path)?;
-    let mut perms = metadata.permissions();
-    perms.set_mode(0o600);
-    std::fs::set_permissions(&path, perms)?;
+    // On Windows, file ACLs handle security differently; skip Unix chmod.
+    #[cfg(unix)]
+    {
+        let metadata = std::fs::metadata(&path)?;
+        let mut perms = metadata.permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&path, perms)?;
+    }
 
     Ok(())
 }
@@ -197,10 +203,14 @@ pub fn save_session(session: &Session) -> Result<()> {
     std::fs::write(&path, &contents)?;
 
     // Set permissions to 0o600 for consistency with config.toml.
-    let metadata = std::fs::metadata(&path)?;
-    let mut perms = metadata.permissions();
-    perms.set_mode(0o600);
-    std::fs::set_permissions(&path, perms)?;
+    // On Windows, skip — ACLs handle file security differently.
+    #[cfg(unix)]
+    {
+        let metadata = std::fs::metadata(&path)?;
+        let mut perms = metadata.permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&path, perms)?;
+    }
 
     Ok(())
 }
