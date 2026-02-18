@@ -725,9 +725,11 @@ impl App {
             // Seek forward (DIFF-03) -- l or Right (Playing view only)
             (KeyCode::Char('l'), _) | (KeyCode::Right, _) => {
                 if matches!(self.view, AppView::Playing) {
-                    if let (Some(player), Some(np)) = (&self.player, &self.now_playing) {
-                        if let Err(e) = player.seek_forward(np.duration_ms) {
-                            tracing::warn!("Seek forward failed: {}", e);
+                    if let Some(np_duration) = self.now_playing.as_ref().map(|np| np.duration_ms) {
+                        if let Some(player) = &mut self.player {
+                            if let Err(e) = player.seek_forward(np_duration) {
+                                tracing::warn!("Seek forward failed: {}", e);
+                            }
                         }
                     }
                 }
@@ -735,7 +737,7 @@ impl App {
             // Seek backward (DIFF-03) -- h or Left (Playing view only)
             (KeyCode::Char('h'), _) | (KeyCode::Left, _) => {
                 if matches!(self.view, AppView::Playing) {
-                    if let Some(player) = &self.player {
+                    if let Some(player) = &mut self.player {
                         if let Err(e) = player.seek_backward() {
                             tracing::warn!("Seek backward failed: {}", e);
                         }

@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use color_eyre::Result;
-use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink};
+use rodio::buffer::SamplesBuffer;
+use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 
 use crate::visualizer::{VisualizerData, VisualizerSource, FFT_SIZE};
 
@@ -29,6 +30,13 @@ pub struct Player {
 
     /// Raw audio bytes of the current track, kept for potential re-creation.
     _audio_data: Option<Vec<u8>>,
+
+    /// Pre-decoded PCM samples for the current main track: (samples, channels, sample_rate).
+    /// Used for seek (recreate SamplesBuffer from offset) and replay (no re-decode needed).
+    decoded_pcm: Option<(Vec<f32>, u16, u32)>,
+
+    /// Shared visualizer data, stored so seek/replay methods can re-wrap with VisualizerSource.
+    visualizer_data: Option<Arc<Mutex<VisualizerData>>>,
 
     /// Name of the currently playing track (for status bar display).
     current_track: Option<String>,
@@ -118,6 +126,8 @@ impl Player {
             _stream: stream,
             main_sink,
             _audio_data: None,
+            decoded_pcm: None,
+            visualizer_data: None,
             current_track: None,
             ambient_sink: None,
             ambient_audio_data: None,
@@ -142,6 +152,39 @@ impl Player {
         let bytes = response.bytes()?;
         tracing::info!(size_bytes = bytes.len(), "Track downloaded");
         Ok(bytes.to_vec())
+    }
+
+    /// Pre-decode compressed audio bytes into raw PCM samples.
+    ///
+    /// Returns `(samples, channels, sample_rate)`. The decoder runs entirely
+    /// in the calling thread -- the resulting Vec<f32> can then be fed to a
+    /// SamplesBuffer so the audio callback thread only does fast memory reads
+    /// (no symphonia decoding on the hot path).
+    fn decode_to_pcm(audio_bytes: &[u8]) -> Result<(Vec<f32>, u16, u32)> {
+        let cursor = Cursor::new(audio_bytes.to_vec());
+        let decoder = Decoder::builder()
+            .with_data(cursor)
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to decode audio: {}", e))?;
+
+        let channels = decoder.channels();
+        let sample_rate = decoder.sample_rate();
+        let samples: Vec<f32> = decoder.collect();
+
+        let duration_secs = if channels > 0 && sample_rate > 0 {
+            samples.len() as f64 / (channels as f64 * sample_rate as f64)
+        } else {
+            0.0
+        };
+        tracing::info!(
+            sample_count = samples.len(),
+            channels,
+            sample_rate,
+            duration_secs = format!("{:.1}", duration_secs),
+            "Pre-decoded audio to PCM"
+        );
+
+        Ok((samples, channels, sample_rate))
     }
 
     /// Load audio bytes and start playback.
@@ -174,18 +217,17 @@ impl Player {
         // Each new Sink starts at volume 1.0, so we must explicitly set it.
         self.main_sink.set_volume(volume.clamp(0.0, 1.0));
 
-        // Decode and play.
-        // Use the builder with byte_len and seekable so the symphonia backend
-        // knows the stream length and supports backward seeking (try_seek to
-        // an earlier position). Without this, only forward seeks succeed.
-        let byte_len = audio_bytes.len() as u64;
-        let cursor = Cursor::new(audio_bytes.clone());
-        let source = Decoder::builder()
-            .with_data(cursor)
-            .with_byte_len(byte_len)
-            .with_seekable(true)
-            .build()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to decode audio: {}", e))?;
+        // Pre-decode to raw PCM samples. This runs the symphonia decoder NOW
+        // (on the calling thread), so the audio callback thread only does fast
+        // memory reads from the Vec<f32>.
+        let (samples, channels, sample_rate) = Self::decode_to_pcm(&audio_bytes)?;
+        self.decoded_pcm = Some((samples.clone(), channels, sample_rate));
+
+        // Store visualizer data for seek/replay re-wrapping
+        self.visualizer_data = visualizer_data.clone();
+
+        // Create SamplesBuffer from pre-decoded PCM
+        let source = SamplesBuffer::new(channels, sample_rate, samples);
 
         // Wrap with visualizer tap if data is provided. The VisualizerSource
         // copies samples to the shared buffer as they flow through, enabling
@@ -197,7 +239,7 @@ impl Player {
             self.main_sink.append(source);
         }
 
-        // Store for potential re-creation and status display
+        // Store compressed bytes for re-download avoidance and status display
         self._audio_data = Some(audio_bytes);
         self.current_track = Some(track_name);
 
@@ -280,53 +322,96 @@ impl Player {
 
     /// Seek forward by SEEK_STEP (5 seconds), clamped to track duration.
     ///
-    /// Uses rodio's try_seek which may not be supported by all decoders.
-    /// Callers should handle the error gracefully (log and ignore).
-    pub fn seek_forward(&self, track_duration_ms: u64) -> Result<(), rodio::source::SeekError> {
+    /// Recreates the SamplesBuffer from the pre-decoded PCM at the target
+    /// sample offset. This avoids try_seek on VisualizerSource (which doesn't
+    /// implement it) and keeps the decoder off the audio thread.
+    pub fn seek_forward(&mut self, track_duration_ms: u64) -> Result<()> {
         let current = self.main_sink.get_pos();
         let max = Duration::from_millis(track_duration_ms);
         let target = (current + SEEK_STEP).min(max);
-        self.main_sink.try_seek(target)
+        self.seek_to(target)
     }
 
     /// Seek backward by SEEK_STEP (5 seconds), saturating at 0.
     ///
-    /// Uses rodio's try_seek which may not be supported by all decoders.
-    /// Callers should handle the error gracefully (log and ignore).
-    pub fn seek_backward(&self) -> Result<(), rodio::source::SeekError> {
+    /// Recreates the SamplesBuffer from the pre-decoded PCM at the target
+    /// sample offset.
+    pub fn seek_backward(&mut self) -> Result<()> {
         let current = self.main_sink.get_pos();
         let target = current.saturating_sub(SEEK_STEP);
-        self.main_sink.try_seek(target)
+        self.seek_to(target)
     }
 
-    /// Replay the current track from cached audio bytes (Repeat One mode).
+    /// Seek to a specific position by recreating the SamplesBuffer from
+    /// the pre-decoded PCM at the target sample offset.
     ///
-    /// Avoids re-downloading the track by re-decoding from the in-memory
-    /// audio data. Creates a fresh Sink to avoid blocking issues after stop().
+    /// Stops the current main_sink, creates a fresh Sink, and appends a
+    /// new SamplesBuffer starting from the calculated sample offset.
+    fn seek_to(&mut self, target: Duration) -> Result<()> {
+        let (samples, channels, sample_rate) = self
+            .decoded_pcm
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("No decoded PCM data for seeking"))?;
+        let channels = *channels;
+        let sample_rate = *sample_rate;
+
+        // Calculate sample offset from target duration
+        let mut offset =
+            (target.as_secs_f64() * sample_rate as f64 * channels as f64) as usize;
+        // Clamp to buffer length
+        offset = offset.min(samples.len());
+        // Align to channel boundary
+        let ch = channels as usize;
+        offset -= offset % ch;
+
+        let volume = self.main_sink.volume();
+        let remaining_samples = samples[offset..].to_vec();
+
+        // Stop current sink and create a fresh one
+        self.main_sink.stop();
+        self.main_sink = Sink::connect_new(self._stream.mixer());
+        self.main_sink.set_volume(volume);
+
+        // Create SamplesBuffer from the offset position
+        let source = SamplesBuffer::new(channels, sample_rate, remaining_samples);
+
+        // Wrap with VisualizerSource if visualizer data is stored
+        if let Some(ref data) = self.visualizer_data {
+            let viz_source = VisualizerSource::new(source, Arc::clone(data), FFT_SIZE);
+            self.main_sink.append(viz_source);
+        } else {
+            self.main_sink.append(source);
+        }
+
+        tracing::info!(
+            target_secs = format!("{:.1}", target.as_secs_f64()),
+            "Seeked to position"
+        );
+        Ok(())
+    }
+
+    /// Replay the current track from cached pre-decoded PCM (Repeat One mode).
+    ///
+    /// Avoids re-downloading AND re-decoding by cloning from the cached
+    /// decoded PCM samples. Creates a fresh Sink to avoid blocking issues
+    /// after stop().
     pub fn replay_current(
         &mut self,
         volume: f32,
         visualizer_data: Option<Arc<Mutex<VisualizerData>>>,
     ) -> Result<()> {
-        let audio_bytes = self
-            ._audio_data
+        let (samples, channels, sample_rate) = self
+            .decoded_pcm
             .clone()
-            .ok_or_else(|| color_eyre::eyre::eyre!("No audio data to replay"))?;
+            .ok_or_else(|| color_eyre::eyre::eyre!("No decoded PCM data to replay"))?;
 
         // Stop current playback and create a fresh Sink
         self.main_sink.stop();
         self.main_sink = Sink::connect_new(self._stream.mixer());
         self.main_sink.set_volume(volume.clamp(0.0, 1.0));
 
-        // Decode from cached bytes and start playback.
-        // Use the builder with byte_len and seekable for backward seek support.
-        let byte_len = audio_bytes.len() as u64;
-        let source = Decoder::builder()
-            .with_data(Cursor::new(audio_bytes))
-            .with_byte_len(byte_len)
-            .with_seekable(true)
-            .build()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to decode audio for replay: {}", e))?;
+        // Create SamplesBuffer from cached pre-decoded PCM (no re-decode needed)
+        let source = SamplesBuffer::new(channels, sample_rate, samples);
 
         // Wrap with visualizer tap if data is provided
         if let Some(data) = visualizer_data {
@@ -336,7 +421,7 @@ impl Player {
             self.main_sink.append(source);
         }
 
-        tracing::info!("Replaying track (Repeat One)");
+        tracing::info!("Replaying track from cached PCM (Repeat One)");
         Ok(())
     }
 
