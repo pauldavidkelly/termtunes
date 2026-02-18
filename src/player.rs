@@ -64,19 +64,40 @@ impl Player {
             ensure_alsa_pulse_config()?;
         }
 
-        let stream = OutputStreamBuilder::from_default_device()
-            .and_then(|builder| {
-                builder
-                    .with_buffer_size(rodio::cpal::BufferSize::Fixed(4096))
-                    .with_error_callback(|err| {
-                        tracing::warn!("Audio stream error (possible underrun): {err}");
-                    })
-                    .open_stream()
-            })
-            .or_else(|_| {
-                tracing::info!("Explicit buffer config failed, falling back to default stream");
-                OutputStreamBuilder::open_default_stream()
-            })
+        // On WSL2: use a fixed 4096-sample cpal buffer to absorb WSLg PulseAudio
+        // scheduling jitter that causes underruns (crackling) at smaller sizes.
+        // On non-WSL2: let the OS/driver choose the optimal buffer size — forcing
+        // Fixed(4096) on native Linux or macOS causes crackling where it isn't needed.
+        let stream = if is_wsl2() {
+            OutputStreamBuilder::from_default_device()
+                .and_then(|builder| {
+                    builder
+                        .with_buffer_size(rodio::cpal::BufferSize::Fixed(4096))
+                        .with_error_callback(|err| {
+                            tracing::warn!("Audio stream error (possible underrun): {err}");
+                        })
+                        .open_stream()
+                })
+                .or_else(|_| {
+                    tracing::info!(
+                        "WSL2 explicit buffer config failed, falling back to default stream"
+                    );
+                    OutputStreamBuilder::open_default_stream()
+                })
+        } else {
+            OutputStreamBuilder::from_default_device()
+                .and_then(|builder| {
+                    builder
+                        .with_error_callback(|err| {
+                            tracing::warn!("Audio stream error (possible underrun): {err}");
+                        })
+                        .open_stream()
+                })
+                .or_else(|_| {
+                    tracing::info!("Explicit stream config failed, falling back to default stream");
+                    OutputStreamBuilder::open_default_stream()
+                })
+        }
             .map_err(|e| {
                 let msg = format!("Failed to open audio output: {}", e);
                 if is_wsl2() {

@@ -44,17 +44,20 @@ async fn main() -> Result<()> {
 
     tracing::info!("TermTunes starting up");
 
-    // 3. Set PULSE_LATENCY_MSEC to improve WSL2 audio quality.
+    // 3. On WSL2 only: set PULSE_LATENCY_MSEC to absorb WSLg scheduling jitter.
     //    Must be set BEFORE creating any OutputStream/audio device.
-    //    The WSLg PulseAudio bridge introduces scheduling jitter that
-    //    causes buffer underruns (crackling/clicking) at low latencies.
-    //    500ms provides enough buffer headroom to absorb this jitter while
-    //    remaining imperceptible for music playback. Lower values cause
-    //    audible artifacts on WSL2: 60ms caused crackling, 150ms caused
-    //    stuttering after ~20 seconds, 300ms was insufficient for sustained
-    //    playback beyond ~1 minute.
+    //    500ms provides enough headroom for sustained WSL2 playback (300ms was
+    //    insufficient beyond ~1 minute; lower values caused crackling/stuttering).
+    //    NOT set on native Linux/macOS: a 500ms PulseAudio latency hint forces an
+    //    oversized buffer on systems that don't need it, causing crackling artifacts.
     //    Safety: called at startup before any threads are spawned.
-    unsafe { std::env::set_var("PULSE_LATENCY_MSEC", "500") };
+    let on_wsl2 = std::fs::read_to_string("/proc/version")
+        .map(|v| v.contains("microsoft") || v.contains("WSL"))
+        .unwrap_or(false);
+    if on_wsl2 {
+        unsafe { std::env::set_var("PULSE_LATENCY_MSEC", "500") };
+        tracing::info!("WSL2 detected: PULSE_LATENCY_MSEC set to 500ms");
+    }
 
     // 3b. Check WSL2 audio dependencies early and warn the user while we
     //     are still on the normal terminal (not alternate screen).
