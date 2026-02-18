@@ -46,17 +46,20 @@ async fn main() -> Result<()> {
 
     // 3. On WSL2 only: set PULSE_LATENCY_MSEC to absorb WSLg scheduling jitter.
     //    Must be set BEFORE creating any OutputStream/audio device.
-    //    500ms provides enough headroom for sustained WSL2 playback (300ms was
-    //    insufficient beyond ~1 minute; lower values caused crackling/stuttering).
-    //    NOT set on native Linux/macOS: a 500ms PulseAudio latency hint forces an
-    //    oversized buffer on systems that don't need it, causing crackling artifacts.
+    //    150ms is the original working value — enough headroom for the WSLg
+    //    PulseAudio bridge without over-buffering. Higher values (300ms, 500ms)
+    //    were added alongside the SamplesBuffer pre-decode fix (quick-4) but the
+    //    pre-decode is what actually fixes audio stopping; the latency bumps are
+    //    unnecessary and cause crackling, especially outside Tmux.
+    //    NOT set on native Linux/macOS: any PulseAudio latency hint can force
+    //    an oversized buffer on systems that don't need it.
     //    Safety: called at startup before any threads are spawned.
     let on_wsl2 = std::fs::read_to_string("/proc/version")
         .map(|v| v.contains("microsoft") || v.contains("WSL"))
         .unwrap_or(false);
     if on_wsl2 {
-        unsafe { std::env::set_var("PULSE_LATENCY_MSEC", "500") };
-        tracing::info!("WSL2 detected: PULSE_LATENCY_MSEC set to 500ms");
+        unsafe { std::env::set_var("PULSE_LATENCY_MSEC", "150") };
+        tracing::info!("WSL2 detected: PULSE_LATENCY_MSEC set to 150ms");
     }
 
     // 3b. Check WSL2 audio dependencies early and warn the user while we

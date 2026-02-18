@@ -6,7 +6,10 @@ use std::sync::Arc;
 use crossterm::cursor;
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
+
+#[cfg(unix)]
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+#[cfg(unix)]
 use signal_hook::flag;
 
 /// Restore the terminal to its original state.
@@ -32,15 +35,24 @@ pub fn install_panic_hook() {
     }));
 }
 
-/// Register signal handlers for SIGINT, SIGTERM, and SIGHUP.
+/// Register signal handlers for clean shutdown.
 ///
-/// Returns a shared `AtomicBool` that is set to `true` when any of
-/// these signals is received. The main event loop should check this
-/// flag on every iteration and exit gracefully when it becomes true.
+/// Returns a shared `AtomicBool` that is set to `true` when a shutdown
+/// signal is received. The main event loop checks this flag on every
+/// iteration and exits gracefully when it becomes true.
+///
+/// On Unix: registers SIGINT, SIGTERM, SIGHUP via signal-hook.
+/// On Windows: returns a stub flag (never set). Ctrl+C is handled by
+/// crossterm's event stream instead, which works natively on Windows.
 pub fn install_signal_handlers() -> Arc<AtomicBool> {
     let shutdown = Arc::new(AtomicBool::new(false));
-    flag::register(SIGINT, Arc::clone(&shutdown)).expect("register SIGINT handler");
-    flag::register(SIGTERM, Arc::clone(&shutdown)).expect("register SIGTERM handler");
-    flag::register(SIGHUP, Arc::clone(&shutdown)).expect("register SIGHUP handler");
+
+    #[cfg(unix)]
+    {
+        flag::register(SIGINT, Arc::clone(&shutdown)).expect("register SIGINT handler");
+        flag::register(SIGTERM, Arc::clone(&shutdown)).expect("register SIGTERM handler");
+        flag::register(SIGHUP, Arc::clone(&shutdown)).expect("register SIGHUP handler");
+    }
+
     shutdown
 }

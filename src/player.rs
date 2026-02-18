@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use color_eyre::Result;
-use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 
 /// Seek step size for forward/backward seeking within a track.
@@ -29,8 +28,9 @@ pub struct Player {
     _audio_data: Option<Vec<u8>>,
 
     /// Pre-decoded PCM samples for the current main track: (samples, channels, sample_rate).
-    /// Used for seek (recreate SamplesBuffer from offset), replay (no re-decode needed),
-    /// and visualizer (UI thread reads samples at playback position — no audio thread overhead).
+    /// Used ONLY for the visualizer — the UI thread reads samples at the current playback
+    /// position to drive the FFT spectrum display. Audio playback uses a streaming Decoder
+    /// instead, keeping the audio callback path free of large memory allocations.
     decoded_pcm: Option<(Vec<f32>, u16, u32)>,
 
     /// Name of the currently playing track (for status bar display).
@@ -39,12 +39,9 @@ pub struct Player {
     /// Ambient channel sink -- None when no ambient track is loaded.
     ambient_sink: Option<Sink>,
 
-    /// Raw audio bytes of the ambient track, kept for backward compatibility.
+    /// Raw audio bytes of the ambient track, kept for loop replay (creates new
+    /// streaming Decoder on each loop — avoids pre-decoded Vec<f32> in memory).
     ambient_audio_data: Option<Vec<u8>>,
-
-    /// Pre-decoded PCM samples for the ambient track: (samples, channels, sample_rate).
-    /// Used for loop replay without re-decoding.
-    ambient_decoded_pcm: Option<(Vec<f32>, u16, u32)>,
 
     /// Name of the ambient track (for status display).
     ambient_track_name: Option<String>,
@@ -64,40 +61,12 @@ impl Player {
             ensure_alsa_pulse_config()?;
         }
 
-        // On WSL2: use a fixed 4096-sample cpal buffer to absorb WSLg PulseAudio
-        // scheduling jitter that causes underruns (crackling) at smaller sizes.
-        // On non-WSL2: let the OS/driver choose the optimal buffer size — forcing
-        // Fixed(4096) on native Linux or macOS causes crackling where it isn't needed.
-        let stream = if is_wsl2() {
-            OutputStreamBuilder::from_default_device()
-                .and_then(|builder| {
-                    builder
-                        .with_buffer_size(rodio::cpal::BufferSize::Fixed(4096))
-                        .with_error_callback(|err| {
-                            tracing::warn!("Audio stream error (possible underrun): {err}");
-                        })
-                        .open_stream()
-                })
-                .or_else(|_| {
-                    tracing::info!(
-                        "WSL2 explicit buffer config failed, falling back to default stream"
-                    );
-                    OutputStreamBuilder::open_default_stream()
-                })
-        } else {
-            OutputStreamBuilder::from_default_device()
-                .and_then(|builder| {
-                    builder
-                        .with_error_callback(|err| {
-                            tracing::warn!("Audio stream error (possible underrun): {err}");
-                        })
-                        .open_stream()
-                })
-                .or_else(|_| {
-                    tracing::info!("Explicit stream config failed, falling back to default stream");
-                    OutputStreamBuilder::open_default_stream()
-                })
-        }
+        // Use the OS default stream on all platforms.
+        // Fixed(4096) was added in quick-3 to absorb WSL2 PulseAudio jitter but
+        // it didn't fix crackling (which persists). Reverting to the original
+        // open_default_stream() lets cpal/ALSA/PulseAudio negotiate the buffer
+        // size themselves — this was the working baseline before quick-3.
+        let stream = OutputStreamBuilder::open_default_stream()
             .map_err(|e| {
                 let msg = format!("Failed to open audio output: {}", e);
                 if is_wsl2() {
@@ -150,7 +119,6 @@ impl Player {
             current_track: None,
             ambient_sink: None,
             ambient_audio_data: None,
-            ambient_decoded_pcm: None,
             ambient_track_name: None,
         })
     }
@@ -176,10 +144,9 @@ impl Player {
 
     /// Pre-decode compressed audio bytes into raw PCM samples.
     ///
-    /// Returns `(samples, channels, sample_rate)`. The decoder runs entirely
-    /// in the calling thread -- the resulting Vec<f32> can then be fed to a
-    /// SamplesBuffer so the audio callback thread only does fast memory reads
-    /// (no symphonia decoding on the hot path).
+    /// Returns `(samples, channels, sample_rate)`. Used to populate decoded_pcm
+    /// for the position-based visualizer. Audio playback uses a separate streaming
+    /// Decoder — not this pre-decoded data — to keep the audio thread lightweight.
     fn decode_to_pcm(audio_bytes: &[u8]) -> Result<(Vec<f32>, u16, u32)> {
         let cursor = Cursor::new(audio_bytes.to_vec());
         let decoder = Decoder::builder()
@@ -209,9 +176,9 @@ impl Player {
 
     /// Load audio bytes and start playback.
     ///
-    /// Stops any currently playing track, pre-decodes the audio bytes to
-    /// raw PCM, and appends a SamplesBuffer to the Sink. The Sink auto-plays
-    /// when a source is appended.
+    /// Stops any currently playing track, pre-decodes audio to decoded_pcm for
+    /// the visualizer, then creates a streaming Decoder for actual audio output.
+    /// The Sink auto-plays when a source is appended.
     ///
     /// After calling stop() on a Sink, appending blocks until the queue
     /// flushes, so we create a fresh Sink for each new track to avoid any
@@ -236,16 +203,24 @@ impl Player {
         // Each new Sink starts at volume 1.0, so we must explicitly set it.
         self.main_sink.set_volume(volume.clamp(0.0, 1.0));
 
-        // Pre-decode to raw PCM samples. This runs the symphonia decoder NOW
-        // (on the calling thread), so the audio callback thread only does fast
-        // memory reads from the Vec<f32>. No VisualizerSource wrapper — the UI
-        // thread reads visualization samples directly from decoded_pcm using
-        // the playback position, keeping the audio thread completely clean.
+        // Pre-decode to PCM for the visualizer only. The UI thread reads from
+        // decoded_pcm at the current playback position to drive the FFT display.
+        // This avoids VisualizerSource (removed) while keeping visualization working.
         let (samples, channels, sample_rate) = Self::decode_to_pcm(&audio_bytes)?;
-        self.decoded_pcm = Some((samples.clone(), channels, sample_rate));
+        self.decoded_pcm = Some((samples, channels, sample_rate));
 
-        // Feed pre-decoded PCM directly to the Sink — zero overhead on audio thread
-        let source = SamplesBuffer::new(channels, sample_rate, samples);
+        // Use a streaming Decoder for audio playback. This keeps the audio callback
+        // path lightweight — no 300MB+ Vec<f32> on the audio thread. The Decoder
+        // yields samples on demand as the audio thread requests them.
+        // with_byte_len + with_seekable=true enables seek via main_sink.try_seek().
+        let byte_len = audio_bytes.len() as u64;
+        let cursor = Cursor::new(audio_bytes.clone());
+        let source = Decoder::builder()
+            .with_data(cursor)
+            .with_byte_len(byte_len)
+            .with_seekable(true)
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to create audio decoder: {}", e))?;
         self.main_sink.append(source);
 
         // Store compressed bytes for re-download avoidance and status display
@@ -331,91 +306,57 @@ impl Player {
 
     /// Seek forward by SEEK_STEP (5 seconds), clamped to track duration.
     ///
-    /// Recreates the SamplesBuffer from the pre-decoded PCM at the target
-    /// sample offset. This avoids try_seek on VisualizerSource (which doesn't
-    /// implement it) and keeps the decoder off the audio thread.
+    /// Delegates to Sink::try_seek — works because the Decoder was built with
+    /// with_seekable(true) and with_byte_len(). No Sink recreation needed.
     pub fn seek_forward(&mut self, track_duration_ms: u64) -> Result<()> {
         let current = self.main_sink.get_pos();
         let max = Duration::from_millis(track_duration_ms);
         let target = (current + SEEK_STEP).min(max);
-        self.seek_to(target)
-    }
-
-    /// Seek backward by SEEK_STEP (5 seconds), saturating at 0.
-    ///
-    /// Recreates the SamplesBuffer from the pre-decoded PCM at the target
-    /// sample offset.
-    pub fn seek_backward(&mut self) -> Result<()> {
-        let current = self.main_sink.get_pos();
-        let target = current.saturating_sub(SEEK_STEP);
-        self.seek_to(target)
-    }
-
-    /// Seek to a specific position by recreating the SamplesBuffer from
-    /// the pre-decoded PCM at the target sample offset.
-    ///
-    /// Stops the current main_sink, creates a fresh Sink, and appends a
-    /// new SamplesBuffer starting from the calculated sample offset.
-    fn seek_to(&mut self, target: Duration) -> Result<()> {
-        let (samples, channels, sample_rate) = self
-            .decoded_pcm
-            .as_ref()
-            .ok_or_else(|| color_eyre::eyre::eyre!("No decoded PCM data for seeking"))?;
-        let channels = *channels;
-        let sample_rate = *sample_rate;
-
-        // Calculate sample offset from target duration
-        let mut offset =
-            (target.as_secs_f64() * sample_rate as f64 * channels as f64) as usize;
-        // Clamp to buffer length
-        offset = offset.min(samples.len());
-        // Align to channel boundary
-        let ch = channels as usize;
-        offset -= offset % ch;
-
-        let volume = self.main_sink.volume();
-        let remaining_samples = samples[offset..].to_vec();
-
-        // Stop current sink and create a fresh one
-        self.main_sink.stop();
-        self.main_sink = Sink::connect_new(self._stream.mixer());
-        self.main_sink.set_volume(volume);
-
-        // Create SamplesBuffer from the offset position — fed directly to Sink
-        let source = SamplesBuffer::new(channels, sample_rate, remaining_samples);
-        self.main_sink.append(source);
-
-        tracing::info!(
-            target_secs = format!("{:.1}", target.as_secs_f64()),
-            "Seeked to position"
-        );
+        self.main_sink
+            .try_seek(target)
+            .map_err(|e| color_eyre::eyre::eyre!("Seek forward failed: {e}"))?;
+        tracing::info!(target_secs = format!("{:.1}", target.as_secs_f64()), "Seeked forward");
         Ok(())
     }
 
-    /// Replay the current track from cached pre-decoded PCM (Repeat One mode).
-    ///
-    /// Avoids re-downloading AND re-decoding by cloning from the cached
-    /// decoded PCM samples. Creates a fresh Sink to avoid blocking issues
-    /// after stop().
-    pub fn replay_current(
-        &mut self,
-        volume: f32,
-    ) -> Result<()> {
-        let (samples, channels, sample_rate) = self
-            .decoded_pcm
-            .clone()
-            .ok_or_else(|| color_eyre::eyre::eyre!("No decoded PCM data to replay"))?;
+    /// Seek backward by SEEK_STEP (5 seconds), saturating at 0.
+    pub fn seek_backward(&mut self) -> Result<()> {
+        let current = self.main_sink.get_pos();
+        let target = current.saturating_sub(SEEK_STEP);
+        self.main_sink
+            .try_seek(target)
+            .map_err(|e| color_eyre::eyre::eyre!("Seek backward failed: {e}"))?;
+        tracing::info!(target_secs = format!("{:.1}", target.as_secs_f64()), "Seeked backward");
+        Ok(())
+    }
 
-        // Stop current playback and create a fresh Sink
+    /// Replay the current track from cached raw bytes (Repeat One mode).
+    ///
+    /// Avoids re-downloading by using the stored compressed audio bytes.
+    /// Creates a fresh streaming Decoder and fresh Sink — no 300MB+ Vec<f32>
+    /// clone on replay.
+    pub fn replay_current(&mut self, volume: f32) -> Result<()> {
+        let audio_bytes = self
+            ._audio_data
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("No audio data to replay"))?
+            .clone();
+
+        let byte_len = audio_bytes.len() as u64;
+        let cursor = Cursor::new(audio_bytes);
+        let source = Decoder::builder()
+            .with_data(cursor)
+            .with_byte_len(byte_len)
+            .with_seekable(true)
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to create replay decoder: {}", e))?;
+
         self.main_sink.stop();
         self.main_sink = Sink::connect_new(self._stream.mixer());
         self.main_sink.set_volume(volume.clamp(0.0, 1.0));
-
-        // Feed pre-decoded PCM directly to the Sink
-        let source = SamplesBuffer::new(channels, sample_rate, samples);
         self.main_sink.append(source);
 
-        tracing::info!("Replaying track from cached PCM (Repeat One)");
+        tracing::info!("Replaying track from cached bytes (Repeat One)");
         Ok(())
     }
 
@@ -425,13 +366,12 @@ impl Player {
 
     /// Load an ambient track from audio bytes and start playback.
     ///
-    /// Stops any currently playing ambient track, creates a fresh Sink on the
-    /// shared mixer, pre-decodes the audio to PCM, and starts playback via
-    /// SamplesBuffer. The decoded PCM is cached for loop replay (manual loop
-    /// to avoid `repeat_infinite()` memory leak).
+    /// Uses a streaming Decoder (no pre-decode to Vec<f32>) — ambient tracks
+    /// can be very long (20+ minutes) and pre-decoding would allocate ~500MB.
+    /// Raw bytes are cached for loop replay (manual loop avoids repeat_infinite()
+    /// memory leak and the large Vec<f32> allocation on each loop).
     ///
-    /// Note: Ambient does NOT use VisualizerSource (visualizer taps main
-    /// channel only).
+    /// Note: Ambient does NOT use the visualizer (visualizer taps main channel only).
     pub fn load_ambient(
         &mut self,
         audio_bytes: Vec<u8>,
@@ -447,20 +387,20 @@ impl Player {
         let new_sink = Sink::connect_new(self._stream.mixer());
         new_sink.set_volume(volume.clamp(0.0, 1.0));
 
-        // Pre-decode to PCM and play via SamplesBuffer
-        let (samples, channels, sample_rate) = Self::decode_to_pcm(&audio_bytes)?;
-        self.ambient_decoded_pcm = Some((samples.clone(), channels, sample_rate));
-
-        let source = SamplesBuffer::new(channels, sample_rate, samples);
+        // Streaming Decoder — no pre-decode, minimal memory on audio thread
+        let cursor = Cursor::new(audio_bytes.clone());
+        let source = Decoder::builder()
+            .with_data(cursor)
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to decode ambient audio: {}", e))?;
         new_sink.append(source);
 
-        // Store sink and cached data
         let name = track_name.clone();
         self.ambient_sink = Some(new_sink);
         self.ambient_audio_data = Some(audio_bytes);
         self.ambient_track_name = Some(track_name);
 
-        tracing::info!(channel = "ambient", track = %name, "Ambient track loaded (pre-decoded PCM)");
+        tracing::info!(channel = "ambient", track = %name, "Ambient track loaded (streaming)");
         Ok(())
     }
 
@@ -471,7 +411,6 @@ impl Player {
         }
         self.ambient_sink = None;
         self.ambient_audio_data = None;
-        self.ambient_decoded_pcm = None;
         self.ambient_track_name = None;
         tracing::info!(channel = "ambient", "Ambient stopped");
     }
@@ -498,39 +437,33 @@ impl Player {
         self.ambient_audio_data.is_some()
     }
 
-    /// Replay the ambient track from cached pre-decoded PCM (manual loop).
+    /// Replay the ambient track from cached raw bytes (manual loop).
     ///
-    /// Stops the old ambient sink, creates a fresh one on the shared mixer,
-    /// and replays from the cached decoded PCM samples (no re-decode needed).
-    /// Falls back to re-decoding from compressed bytes if decoded PCM is
-    /// unavailable. This avoids rodio's `repeat_infinite()` memory leak (#673).
+    /// Stops the old ambient sink, creates a fresh streaming Decoder from the
+    /// stored compressed bytes, and starts a fresh Sink. Avoids both
+    /// `repeat_infinite()` memory leak and large Vec<f32> allocation on loop.
     pub fn replay_ambient(&mut self, volume: f32) -> Result<()> {
-        // Stop old ambient sink and create fresh one
+        let audio_bytes = self
+            .ambient_audio_data
+            .as_ref()
+            .ok_or_else(|| color_eyre::eyre::eyre!("No ambient audio data to replay"))?
+            .clone();
+
+        let cursor = Cursor::new(audio_bytes);
+        let source = Decoder::builder()
+            .with_data(cursor)
+            .build()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to create ambient replay decoder: {}", e))?;
+
         if let Some(ref sink) = self.ambient_sink {
             sink.stop();
         }
         let new_sink = Sink::connect_new(self._stream.mixer());
         new_sink.set_volume(volume.clamp(0.0, 1.0));
-
-        // Prefer cached decoded PCM; fall back to re-decoding from compressed bytes
-        if let Some((ref samples, channels, sample_rate)) = self.ambient_decoded_pcm {
-            let source = SamplesBuffer::new(channels, sample_rate, samples.clone());
-            new_sink.append(source);
-        } else if let Some(ref audio_bytes) = self.ambient_audio_data {
-            tracing::warn!(
-                channel = "ambient",
-                "Decoded PCM unavailable, falling back to re-decode from compressed bytes"
-            );
-            let (samples, channels, sample_rate) = Self::decode_to_pcm(audio_bytes)?;
-            self.ambient_decoded_pcm = Some((samples.clone(), channels, sample_rate));
-            let source = SamplesBuffer::new(channels, sample_rate, samples);
-            new_sink.append(source);
-        } else {
-            return Err(color_eyre::eyre::eyre!("No ambient audio data to replay"));
-        }
+        new_sink.append(source);
 
         self.ambient_sink = Some(new_sink);
-        tracing::info!(channel = "ambient", "Ambient track loop restarted (cached PCM)");
+        tracing::info!(channel = "ambient", "Ambient track loop restarted (streaming)");
         Ok(())
     }
 
