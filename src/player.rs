@@ -44,8 +44,12 @@ pub struct Player {
     /// Ambient channel sink -- None when no ambient track is loaded.
     ambient_sink: Option<Sink>,
 
-    /// Raw audio bytes of the ambient track, kept for loop re-decode.
+    /// Raw audio bytes of the ambient track, kept for backward compatibility.
     ambient_audio_data: Option<Vec<u8>>,
+
+    /// Pre-decoded PCM samples for the ambient track: (samples, channels, sample_rate).
+    /// Used for loop replay without re-decoding.
+    ambient_decoded_pcm: Option<(Vec<f32>, u16, u32)>,
 
     /// Name of the ambient track (for status display).
     ambient_track_name: Option<String>,
@@ -131,6 +135,7 @@ impl Player {
             current_track: None,
             ambient_sink: None,
             ambient_audio_data: None,
+            ambient_decoded_pcm: None,
             ambient_track_name: None,
         })
     }
@@ -189,9 +194,9 @@ impl Player {
 
     /// Load audio bytes and start playback.
     ///
-    /// Stops any currently playing track, creates a Decoder from the audio
-    /// bytes (via Cursor<Vec<u8>>), and appends to the Sink. The Sink
-    /// auto-plays when a source is appended.
+    /// Stops any currently playing track, pre-decodes the audio bytes to
+    /// raw PCM, and appends a SamplesBuffer to the Sink. The Sink auto-plays
+    /// when a source is appended.
     ///
     /// After calling stop() on a Sink, appending blocks until the queue
     /// flushes, so we create a fresh Sink for each new track to avoid any
@@ -432,13 +437,12 @@ impl Player {
     /// Load an ambient track from audio bytes and start playback.
     ///
     /// Stops any currently playing ambient track, creates a fresh Sink on the
-    /// shared mixer, decodes the audio, and starts playback. The raw audio
-    /// bytes are cached for loop re-decode (manual loop to avoid
-    /// `repeat_infinite()` memory leak).
+    /// shared mixer, pre-decodes the audio to PCM, and starts playback via
+    /// SamplesBuffer. The decoded PCM is cached for loop replay (manual loop
+    /// to avoid `repeat_infinite()` memory leak).
     ///
     /// Note: Ambient does NOT use VisualizerSource (visualizer taps main
-    /// channel only) and does NOT need seekable decoding (no seeking on
-    /// ambient tracks).
+    /// channel only).
     pub fn load_ambient(
         &mut self,
         audio_bytes: Vec<u8>,
@@ -454,21 +458,20 @@ impl Player {
         let new_sink = Sink::connect_new(self._stream.mixer());
         new_sink.set_volume(volume.clamp(0.0, 1.0));
 
-        // Decode audio bytes (no byte_len/seekable needed for ambient)
-        let cursor = Cursor::new(audio_bytes.clone());
-        let source = Decoder::builder()
-            .with_data(cursor)
-            .build()
-            .map_err(|e| color_eyre::eyre::eyre!("Failed to decode ambient audio: {}", e))?;
+        // Pre-decode to PCM and play via SamplesBuffer
+        let (samples, channels, sample_rate) = Self::decode_to_pcm(&audio_bytes)?;
+        self.ambient_decoded_pcm = Some((samples.clone(), channels, sample_rate));
+
+        let source = SamplesBuffer::new(channels, sample_rate, samples);
         new_sink.append(source);
 
-        // Store sink and cached data for loop re-decode
+        // Store sink and cached data
         let name = track_name.clone();
         self.ambient_sink = Some(new_sink);
         self.ambient_audio_data = Some(audio_bytes);
         self.ambient_track_name = Some(track_name);
 
-        tracing::info!(channel = "ambient", track = %name, "Ambient track loaded");
+        tracing::info!(channel = "ambient", track = %name, "Ambient track loaded (pre-decoded PCM)");
         Ok(())
     }
 
@@ -479,6 +482,7 @@ impl Player {
         }
         self.ambient_sink = None;
         self.ambient_audio_data = None;
+        self.ambient_decoded_pcm = None;
         self.ambient_track_name = None;
         tracing::info!(channel = "ambient", "Ambient stopped");
     }
@@ -505,17 +509,13 @@ impl Player {
         self.ambient_audio_data.is_some()
     }
 
-    /// Replay the ambient track from cached bytes (manual loop mechanism).
+    /// Replay the ambient track from cached pre-decoded PCM (manual loop).
     ///
     /// Stops the old ambient sink, creates a fresh one on the shared mixer,
-    /// re-decodes from the cached compressed bytes, and starts playback.
-    /// This avoids rodio's `repeat_infinite()` memory leak (issue #673).
+    /// and replays from the cached decoded PCM samples (no re-decode needed).
+    /// Falls back to re-decoding from compressed bytes if decoded PCM is
+    /// unavailable. This avoids rodio's `repeat_infinite()` memory leak (#673).
     pub fn replay_ambient(&mut self, volume: f32) -> Result<()> {
-        let audio_bytes = self
-            .ambient_audio_data
-            .clone()
-            .ok_or_else(|| color_eyre::eyre::eyre!("No ambient audio data to replay"))?;
-
         // Stop old ambient sink and create fresh one
         if let Some(ref sink) = self.ambient_sink {
             sink.stop();
@@ -523,18 +523,25 @@ impl Player {
         let new_sink = Sink::connect_new(self._stream.mixer());
         new_sink.set_volume(volume.clamp(0.0, 1.0));
 
-        // Decode from cached bytes
-        let cursor = Cursor::new(audio_bytes);
-        let source = Decoder::builder()
-            .with_data(cursor)
-            .build()
-            .map_err(|e| {
-                color_eyre::eyre::eyre!("Failed to decode ambient audio for replay: {}", e)
-            })?;
-        new_sink.append(source);
+        // Prefer cached decoded PCM; fall back to re-decoding from compressed bytes
+        if let Some((ref samples, channels, sample_rate)) = self.ambient_decoded_pcm {
+            let source = SamplesBuffer::new(channels, sample_rate, samples.clone());
+            new_sink.append(source);
+        } else if let Some(ref audio_bytes) = self.ambient_audio_data {
+            tracing::warn!(
+                channel = "ambient",
+                "Decoded PCM unavailable, falling back to re-decode from compressed bytes"
+            );
+            let (samples, channels, sample_rate) = Self::decode_to_pcm(audio_bytes)?;
+            self.ambient_decoded_pcm = Some((samples.clone(), channels, sample_rate));
+            let source = SamplesBuffer::new(channels, sample_rate, samples);
+            new_sink.append(source);
+        } else {
+            return Err(color_eyre::eyre::eyre!("No ambient audio data to replay"));
+        }
 
         self.ambient_sink = Some(new_sink);
-        tracing::info!(channel = "ambient", "Ambient track loop restarted");
+        tracing::info!(channel = "ambient", "Ambient track loop restarted (cached PCM)");
         Ok(())
     }
 
