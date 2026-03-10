@@ -35,8 +35,7 @@ async fn main() -> Result<()> {
     let log_file = std::fs::File::create(log_dir.join("termtunes.log"))?;
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info"))
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_writer(log_file)
         .with_ansi(false)
@@ -44,13 +43,13 @@ async fn main() -> Result<()> {
 
     tracing::info!("TermTunes starting up");
 
-    // 3. On WSL2 only: set PULSE_LATENCY_MSEC to absorb WSLg scheduling jitter.
+    // 3. Load config (creates new with UUID on first run)
+    let mut config = config::load_config()?;
+    tracing::info!(client_id = %config.client_id, "Config loaded");
+
+    // 4. On WSL2 only: set PULSE_LATENCY_MSEC to absorb WSLg scheduling jitter.
     //    Must be set BEFORE creating any OutputStream/audio device.
-    //    150ms is the original working value — enough headroom for the WSLg
-    //    PulseAudio bridge without over-buffering. Higher values (300ms, 500ms)
-    //    were added alongside the SamplesBuffer pre-decode fix (quick-4) but the
-    //    pre-decode is what actually fixes audio stopping; the latency bumps are
-    //    unnecessary and cause crackling, especially outside Tmux.
+    //    Uses config.wsl_pulse_latency_msec when present, else defaults to 150ms.
     //    NOT set on native Linux/macOS: any PulseAudio latency hint can force
     //    an oversized buffer on systems that don't need it.
     //    Safety: called at startup before any threads are spawned.
@@ -58,31 +57,31 @@ async fn main() -> Result<()> {
         .map(|v| v.contains("microsoft") || v.contains("WSL"))
         .unwrap_or(false);
     if on_wsl2 {
-        unsafe { std::env::set_var("PULSE_LATENCY_MSEC", "150") };
-        tracing::info!("WSL2 detected: PULSE_LATENCY_MSEC set to 150ms");
+        let latency_msec = config.wsl_pulse_latency_msec.unwrap_or(150).clamp(50, 2000);
+        unsafe { std::env::set_var("PULSE_LATENCY_MSEC", latency_msec.to_string()) };
+        tracing::info!(
+            latency_msec,
+            configured = config.wsl_pulse_latency_msec.is_some(),
+            "WSL2 detected: PULSE_LATENCY_MSEC configured"
+        );
     }
 
-    // 3b. Check WSL2 audio dependencies early and warn the user while we
+    // 4b. Check WSL2 audio dependencies early and warn the user while we
     //     are still on the normal terminal (not alternate screen).
     check_wsl2_audio_deps();
 
-    // 4. Install panic hook BEFORE terminal init so panics restore terminal
+    // 5. Install panic hook BEFORE terminal init so panics restore terminal
     tui::install_panic_hook();
 
-    // 5. Register signal handlers (SIGINT, SIGTERM, SIGHUP)
+    // 6. Register signal handlers (SIGINT, SIGTERM, SIGHUP)
     let shutdown = tui::install_signal_handlers();
-
-    // 6. Load config (creates new with UUID on first run)
-    let mut config = config::load_config()?;
-    tracing::info!(client_id = %config.client_id, "Config loaded");
 
     // 7. Save config (ensures file exists on first run)
     config::save_config(&config)?;
 
     // 8. Authenticate with Plex (before entering TUI so the auth URL
     //    is displayed on the normal terminal, not the alternate screen)
-    let (plex_client, server_name) =
-        app::authenticate(&mut config).await?;
+    let (plex_client, server_name) = app::authenticate(&mut config).await?;
 
     tracing::info!(server = %server_name, "Authenticated with Plex server");
 
@@ -132,7 +131,9 @@ fn check_wsl2_audio_deps() {
         "/usr/lib/alsa-lib/libasound_module_pcm_pulse.so",
         "/usr/lib/aarch64-linux-gnu/alsa-lib/libasound_module_pcm_pulse.so",
     ];
-    let has_plugin = plugin_paths.iter().any(|p| std::path::Path::new(p).exists());
+    let has_plugin = plugin_paths
+        .iter()
+        .any(|p| std::path::Path::new(p).exists());
 
     if !has_plugin {
         eprintln!();
