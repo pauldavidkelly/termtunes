@@ -43,23 +43,38 @@ async fn main() -> Result<()> {
 
     tracing::info!("TermTunes starting up");
 
-    // 3. On WSL2 only: set PULSE_LATENCY_MSEC to absorb WSLg scheduling jitter.
-    //    Must be set BEFORE creating any OutputStream/audio device.
-    configure_wsl2_pulse_latency();
+    // 3. Load config (creates new with UUID on first run)
+    let mut config = config::load_config()?;
+    tracing::info!(client_id = %config.client_id, "Config loaded");
 
-    // 3b. Check WSL2 audio dependencies early and warn the user while we
+    // 4. On WSL2 only: set PULSE_LATENCY_MSEC to absorb WSLg scheduling jitter.
+    //    Must be set BEFORE creating any OutputStream/audio device.
+    //    Uses config.wsl_pulse_latency_msec when present, else defaults to 150ms.
+    //    NOT set on native Linux/macOS: any PulseAudio latency hint can force
+    //    an oversized buffer on systems that don't need it.
+    //    Safety: called at startup before any threads are spawned.
+    let on_wsl2 = std::fs::read_to_string("/proc/version")
+        .map(|v| v.contains("microsoft") || v.contains("WSL"))
+        .unwrap_or(false);
+    if on_wsl2 {
+        let latency_msec = config.wsl_pulse_latency_msec.unwrap_or(150).clamp(50, 2000);
+        unsafe { std::env::set_var("PULSE_LATENCY_MSEC", latency_msec.to_string()) };
+        tracing::info!(
+            latency_msec,
+            configured = config.wsl_pulse_latency_msec.is_some(),
+            "WSL2 detected: PULSE_LATENCY_MSEC configured"
+        );
+    }
+
+    // 4b. Check WSL2 audio dependencies early and warn the user while we
     //     are still on the normal terminal (not alternate screen).
     check_wsl2_audio_deps();
 
-    // 4. Install panic hook BEFORE terminal init so panics restore terminal
+    // 5. Install panic hook BEFORE terminal init so panics restore terminal
     tui::install_panic_hook();
 
-    // 5. Register signal handlers (SIGINT, SIGTERM, SIGHUP)
+    // 6. Register signal handlers (SIGINT, SIGTERM, SIGHUP)
     let shutdown = tui::install_signal_handlers();
-
-    // 6. Load config (creates new with UUID on first run)
-    let mut config = config::load_config()?;
-    tracing::info!(client_id = %config.client_id, "Config loaded");
 
     // 7. Save config (ensures file exists on first run)
     config::save_config(&config)?;
