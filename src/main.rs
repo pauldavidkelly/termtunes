@@ -43,71 +43,23 @@ async fn main() -> Result<()> {
 
     tracing::info!("TermTunes starting up");
 
-    // 3. Load config (creates new with UUID on first run)
-    let mut config = config::load_config()?;
-    tracing::info!(client_id = %config.client_id, "Config loaded");
-
-    // 4. On WSL2 only: set PULSE_LATENCY_MSEC to absorb WSLg scheduling jitter.
+    // 3. On WSL2 only: set PULSE_LATENCY_MSEC to absorb WSLg scheduling jitter.
     //    Must be set BEFORE creating any OutputStream/audio device.
-    //    Precedence (highest -> lowest):
-    //      1) Existing PULSE_LATENCY_MSEC env var (user override)
-    //      2) config.wsl_pulse_latency_msec
-    //      3) built-in default (150ms)
-    //    NOT set on native Linux/macOS: any PulseAudio latency hint can force
-    //    an oversized buffer on systems that don't need it.
-    //    Safety: called at startup before any threads are spawned.
-    let on_wsl2 = std::fs::read_to_string("/proc/version")
-        .map(|v| v.contains("microsoft") || v.contains("WSL"))
-        .unwrap_or(false);
-    if on_wsl2 {
-        let env_latency = std::env::var("PULSE_LATENCY_MSEC").ok().and_then(|v| {
-            match v.trim().parse::<u32>() {
-                Ok(n) => Some(n),
-                Err(_) => {
-                    tracing::warn!(
-                        raw = %v,
-                        "Ignoring invalid PULSE_LATENCY_MSEC env var; expected integer milliseconds"
-                    );
-                    None
-                }
-            }
-        });
+    configure_wsl2_pulse_latency();
 
-        let (raw_latency_msec, source) = if let Some(v) = env_latency {
-            (v, "env")
-        } else if let Some(v) = config.wsl_pulse_latency_msec {
-            (v, "config")
-        } else {
-            (150, "default")
-        };
-
-        let latency_msec = raw_latency_msec.clamp(50, 2000);
-        if latency_msec != raw_latency_msec {
-            tracing::warn!(
-                source,
-                requested = raw_latency_msec,
-                clamped = latency_msec,
-                "WSL2 latency value out of supported range; clamped to 50..=2000ms"
-            );
-        }
-
-        unsafe { std::env::set_var("PULSE_LATENCY_MSEC", latency_msec.to_string()) };
-        tracing::info!(
-            latency_msec,
-            source,
-            "WSL2 detected: PULSE_LATENCY_MSEC configured"
-        );
-    }
-
-    // 4b. Check WSL2 audio dependencies early and warn the user while we
+    // 3b. Check WSL2 audio dependencies early and warn the user while we
     //     are still on the normal terminal (not alternate screen).
     check_wsl2_audio_deps();
 
-    // 5. Install panic hook BEFORE terminal init so panics restore terminal
+    // 4. Install panic hook BEFORE terminal init so panics restore terminal
     tui::install_panic_hook();
 
-    // 6. Register signal handlers (SIGINT, SIGTERM, SIGHUP)
+    // 5. Register signal handlers (SIGINT, SIGTERM, SIGHUP)
     let shutdown = tui::install_signal_handlers();
+
+    // 6. Load config (creates new with UUID on first run)
+    let mut config = config::load_config()?;
+    tracing::info!(client_id = %config.client_id, "Config loaded");
 
     // 7. Save config (ensures file exists on first run)
     config::save_config(&config)?;
@@ -139,6 +91,74 @@ async fn main() -> Result<()> {
 
     // 13. Propagate any error from the app run
     result
+}
+
+/// Configure PulseAudio latency hint for WSL2 before audio init.
+///
+/// Precedence (highest -> lowest):
+/// 1) Existing PULSE_LATENCY_MSEC environment variable
+/// 2) `wsl_pulse_latency_msec` from config.toml
+/// 3) Built-in default (150)
+fn configure_wsl2_pulse_latency() {
+    let on_wsl2 = std::fs::read_to_string("/proc/version")
+        .map(|v| v.contains("microsoft") || v.contains("WSL"))
+        .unwrap_or(false);
+    if !on_wsl2 {
+        return;
+    }
+
+    let env_latency =
+        std::env::var("PULSE_LATENCY_MSEC")
+            .ok()
+            .and_then(|v| match v.trim().parse::<u32>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    tracing::warn!(
+                        raw = %v,
+                        "Ignoring invalid PULSE_LATENCY_MSEC env var; expected integer milliseconds"
+                    );
+                    None
+                }
+            });
+
+    let (raw_latency_msec, source) = if let Some(v) = env_latency {
+        (v, "env")
+    } else if let Some(v) = read_wsl_latency_from_config_file() {
+        (v, "config")
+    } else {
+        (150, "default")
+    };
+
+    let latency_msec = raw_latency_msec.clamp(50, 2000);
+    if latency_msec != raw_latency_msec {
+        tracing::warn!(
+            source,
+            requested = raw_latency_msec,
+            clamped = latency_msec,
+            "WSL2 latency value out of supported range; clamped to 50..=2000ms"
+        );
+    }
+
+    unsafe { std::env::set_var("PULSE_LATENCY_MSEC", latency_msec.to_string()) };
+    tracing::info!(
+        latency_msec,
+        source,
+        "WSL2 detected: PULSE_LATENCY_MSEC configured"
+    );
+}
+
+/// Best-effort read of `wsl_pulse_latency_msec` from config.toml.
+///
+/// Returns None when config is missing, unreadable, malformed, or the key is
+/// absent/invalid. This must never block startup.
+fn read_wsl_latency_from_config_file() -> Option<u32> {
+    let path = config::config_path();
+    let contents = std::fs::read_to_string(path).ok()?;
+    let value: toml::Value = toml::from_str(&contents).ok()?;
+    value
+        .get("wsl_pulse_latency_msec")
+        .and_then(toml::Value::as_integer)
+        .and_then(|n| u32::try_from(n).ok())
 }
 
 /// Check WSL2 audio dependencies at startup and print warnings.
