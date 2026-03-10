@@ -60,6 +60,20 @@ sudo apt install libasound2-plugins
 
 This requires WSLg (Windows 11), which provides a PulseAudio server at `/mnt/wslg/PulseServer`.
 
+### WSL2 Audio Latency Tuning
+
+If you hear underruns/stutter on WSL2, set a custom PulseAudio latency hint in
+`~/.config/termtunes/config.toml`:
+
+```toml
+wsl_pulse_latency_msec = 300
+```
+
+Precedence (highest -> lowest):
+1. Existing `PULSE_LATENCY_MSEC` environment variable
+2. `wsl_pulse_latency_msec` from config
+3. Default `150`
+
 ### Build and Run
 
 ```bash

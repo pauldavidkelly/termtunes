@@ -28,6 +28,13 @@ pub struct Config {
     /// Allows instant playlist activation with a single key press.
     #[serde(default)]
     pub favorites: HashMap<String, FavoritePlaylist>,
+
+    /// Optional PulseAudio latency hint (milliseconds) applied on WSL2.
+    ///
+    /// When set, TermTunes exports `PULSE_LATENCY_MSEC` to this value before
+    /// any audio device is created. Leave unset to use the built-in default.
+    #[serde(default)]
+    pub wsl_pulse_latency_msec: Option<u32>,
 }
 
 /// Configuration for a single Plex server.
@@ -107,7 +114,12 @@ pub struct Session {
 /// to `~/.config` if `dirs::config_dir()` returns None.
 pub fn config_path() -> PathBuf {
     dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from(format!("{}/.config", std::env::var("HOME").unwrap_or_default())))
+        .unwrap_or_else(|| {
+            PathBuf::from(format!(
+                "{}/.config",
+                std::env::var("HOME").unwrap_or_default()
+            ))
+        })
         .join("termtunes")
         .join("config.toml")
 }

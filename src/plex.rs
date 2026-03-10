@@ -393,14 +393,17 @@ impl PlexClient {
         Ok(resp.media_container.metadata)
     }
 
-    /// Construct a stream URL for a media part.
+    /// Construct a download URL for a media part.
     ///
-    /// The part key is a path like "/library/parts/12345/file.flac".
-    /// The stream URL appends the auth token as a query parameter.
+    /// The part key is typically a path like "/library/parts/12345/file.flac".
+    /// We force `download=1` to request the full file payload and append the
+    /// auth token. Handles part keys that may already include query params.
     pub fn stream_url(&self, part_key: &str) -> String {
+        let has_query = part_key.contains('?');
+        let sep = if has_query { '&' } else { '?' };
         format!(
-            "{}{}?X-Plex-Token={}",
-            self.server_url, part_key, self.token
+            "{}{}{}download=1&X-Plex-Token={}",
+            self.server_url, part_key, sep, self.token
         )
     }
 }
