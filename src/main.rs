@@ -108,6 +108,74 @@ async fn main() -> Result<()> {
     result
 }
 
+/// Configure PulseAudio latency hint for WSL2 before audio init.
+///
+/// Precedence (highest -> lowest):
+/// 1) Existing PULSE_LATENCY_MSEC environment variable
+/// 2) `wsl_pulse_latency_msec` from config.toml
+/// 3) Built-in default (150)
+fn configure_wsl2_pulse_latency() {
+    let on_wsl2 = std::fs::read_to_string("/proc/version")
+        .map(|v| v.contains("microsoft") || v.contains("WSL"))
+        .unwrap_or(false);
+    if !on_wsl2 {
+        return;
+    }
+
+    let env_latency =
+        std::env::var("PULSE_LATENCY_MSEC")
+            .ok()
+            .and_then(|v| match v.trim().parse::<u32>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    tracing::warn!(
+                        raw = %v,
+                        "Ignoring invalid PULSE_LATENCY_MSEC env var; expected integer milliseconds"
+                    );
+                    None
+                }
+            });
+
+    let (raw_latency_msec, source) = if let Some(v) = env_latency {
+        (v, "env")
+    } else if let Some(v) = read_wsl_latency_from_config_file() {
+        (v, "config")
+    } else {
+        (150, "default")
+    };
+
+    let latency_msec = raw_latency_msec.clamp(50, 2000);
+    if latency_msec != raw_latency_msec {
+        tracing::warn!(
+            source,
+            requested = raw_latency_msec,
+            clamped = latency_msec,
+            "WSL2 latency value out of supported range; clamped to 50..=2000ms"
+        );
+    }
+
+    unsafe { std::env::set_var("PULSE_LATENCY_MSEC", latency_msec.to_string()) };
+    tracing::info!(
+        latency_msec,
+        source,
+        "WSL2 detected: PULSE_LATENCY_MSEC configured"
+    );
+}
+
+/// Best-effort read of `wsl_pulse_latency_msec` from config.toml.
+///
+/// Returns None when config is missing, unreadable, malformed, or the key is
+/// absent/invalid. This must never block startup.
+fn read_wsl_latency_from_config_file() -> Option<u32> {
+    let path = config::config_path();
+    let contents = std::fs::read_to_string(path).ok()?;
+    let value: toml::Value = toml::from_str(&contents).ok()?;
+    value
+        .get("wsl_pulse_latency_msec")
+        .and_then(toml::Value::as_integer)
+        .and_then(|n| u32::try_from(n).ok())
+}
+
 /// Check WSL2 audio dependencies at startup and print warnings.
 ///
 /// On WSL2, audio requires: (1) the ALSA PulseAudio plugin (`libasound2-plugins`)
