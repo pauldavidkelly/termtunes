@@ -91,6 +91,20 @@ TermTunes stores files in standard XDG locations:
 
 The config file is set to `0600` permissions since it contains Plex auth tokens.
 
+### WSL2 Audio Latency Tuning
+
+If you hear underruns/stutter on WSL2, set a custom PulseAudio latency hint in
+`~/.config/termtunes/config.toml`:
+
+```toml
+wsl_pulse_latency_msec = 300
+```
+
+TermTunes applies this only on WSL2. Precedence is:
+1. existing `PULSE_LATENCY_MSEC` environment variable,
+2. `wsl_pulse_latency_msec` from config,
+3. default `150`.
+
 ## Tmux Integration
 
 TermTunes writes the current track info to `~/.local/share/termtunes/now_playing`. You can display this in your tmux status bar by adding it to your tmux config:
